@@ -1,0 +1,220 @@
+{
+  "name": "UWB",
+  "type": "ARM",
+  "dependenceList": [],
+  "srcDirs": [
+    "APP",
+    "Thrid/asm330",
+    "Core",
+    "FATFS",
+    "Middlewares",
+    "Drivers"
+  ],
+  "virtualFolder": {
+    "name": "<virtual_root>",
+    "files": [],
+    "folders": []
+  },
+  "outDir": "build",
+  "deviceName": null,
+  "packDir": null,
+  "miscInfo": {
+    "uid": "829420f1f4a0d02f71df28d248d60295"
+  },
+  "targets": {
+    "Debug": {
+      "excludeList": [],
+      "toolchain": "GCC",
+      "compileConfig": {
+        "cpuType": "Cortex-M7",
+        "archExtensions": "",
+        "floatingPointHardware": "single",
+        "scatterFilePath": "STM32H743VITX_FLASH.ld",
+        "useCustomScatterFile": true,
+        "storageLayout": {
+          "RAM": [],
+          "ROM": []
+        },
+        "options": "null"
+      },
+      "uploader": "OpenOCD",
+      "uploadConfig": {
+        "bin": "",
+        "target": "stm32h7x",
+        "interface": "stlink",
+        "baseAddr": "0x08000000"
+      },
+      "uploadConfigMap": {
+        "JLink": {
+          "bin": "",
+          "baseAddr": "",
+          "cpuInfo": {
+            "vendor": "null",
+            "cpuName": "null"
+          },
+          "proType": 1,
+          "speed": 8000,
+          "otherCmds": ""
+        }
+      },
+      "custom_dep": {
+        "name": "default",
+        "incList": [
+          "FATFS/App",
+          "Drivers/STM32H7xx_HAL_Driver/Inc",
+          "Drivers/STM32H7xx_HAL_Driver/Inc/Legacy",
+          "Middlewares/Third_Party/FreeRTOS/Source/include",
+          "Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2",
+          "Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F",
+          "Middlewares/Third_Party/FatFs/src",
+          "Drivers/CMSIS/Device/ST/STM32H7xx/Include",
+          "Drivers/CMSIS/Include",
+          "APP/Bsp",
+          "APP/common",
+          "APP/task",
+          "Thrid/asm330",
+          "Core/Inc",
+          "FATFS/Target"
+        ],
+        "libList": [],
+        "defineList": [
+          "DEBUG",
+          "USE_PWR_LDO_SUPPLY",
+          "USE_HAL_DRIVER",
+          "STM32H743xx"
+        ]
+      },
+      "builderOptions": {
+        "GCC": {
+          "version": 5,
+          "beforeBuildTasks": [],
+          "afterBuildTasks": [],
+          "global": {
+            "$float-abi-type": "hard",
+            "output-debug-info": "enable",
+            "use-newlib-nano": true,
+            "not-use-syscalls": true,
+            "misc-control": []
+          },
+          "c/cpp-compiler": {
+            "language-c": "c11",
+            "language-cpp": "c++11",
+            "optimization": "level-debug",
+            "warnings": "all-warnings",
+            "one-elf-section-per-function": true,
+            "one-elf-section-per-data": true,
+            "C_FLAGS": "",
+            "CXX_FLAGS": ""
+          },
+          "asm-compiler": {
+            "ASM_FLAGS": "-DDEBUG"
+          },
+          "linker": {
+            "$outputTaskExcludes": [
+              ".bin"
+            ],
+            "output-format": "elf",
+            "remove-unused-input-sections": true,
+            "LD_FLAGS": "",
+            "LIB_FLAGS": ""
+          }
+        }
+      }
+    },
+    "Release": {
+      "excludeList": [],
+      "toolchain": "GCC",
+      "compileConfig": {
+        "cpuType": "Cortex-M7",
+        "archExtensions": "",
+        "floatingPointHardware": "single",
+        "scatterFilePath": "STM32H743VITX_FLASH.ld",
+        "useCustomScatterFile": true,
+        "storageLayout": {
+          "RAM": [],
+          "ROM": []
+        },
+        "options": "null"
+      },
+      "uploader": "OpenOCD",
+      "uploadConfig": {
+        "bin": "",
+        "target": "stm32h7x",
+        "interface": "stlink",
+        "baseAddr": "0x08000000"
+      },
+      "uploadConfigMap": {
+        "JLink": {
+          "bin": "",
+          "baseAddr": "",
+          "cpuInfo": {
+            "vendor": "null",
+            "cpuName": "null"
+          },
+          "proType": 1,
+          "speed": 8000,
+          "otherCmds": ""
+        }
+      },
+      "builderOptions": {
+        "GCC": {
+          "version": 5,
+          "beforeBuildTasks": [],
+          "afterBuildTasks": [],
+          "global": {
+            "$float-abi-type": "hard",
+            "output-debug-info": "enable",
+            "use-newlib-nano": true,
+            "not-use-syscalls": true,
+            "misc-control": []
+          },
+          "c/cpp-compiler": {
+            "language-c": "c11",
+            "language-cpp": "c++11",
+            "optimization": "level-debug",
+            "warnings": "all-warnings",
+            "one-elf-section-per-function": true,
+            "one-elf-section-per-data": true,
+            "C_FLAGS": "",
+            "CXX_FLAGS": ""
+          },
+          "asm-compiler": {
+            "ASM_FLAGS": ""
+          },
+          "linker": {
+            "$outputTaskExcludes": [
+              ".bin"
+            ],
+            "output-format": "elf",
+            "remove-unused-input-sections": true,
+            "LD_FLAGS": "",
+            "LIB_FLAGS": ""
+          }
+        }
+      },
+      "custom_dep": {
+        "name": "default",
+        "incList": [
+          "Core/Inc",
+          "FATFS/Target",
+          "FATFS/App",
+          "Drivers/STM32H7xx_HAL_Driver/Inc",
+          "Drivers/STM32H7xx_HAL_Driver/Inc/Legacy",
+          "Middlewares/Third_Party/FreeRTOS/Source/include",
+          "Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2",
+          "Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F",
+          "Middlewares/Third_Party/FatFs/src",
+          "Drivers/CMSIS/Device/ST/STM32H7xx/Include",
+          "Drivers/CMSIS/Include"
+        ],
+        "defineList": [
+          "USE_PWR_LDO_SUPPLY",
+          "USE_HAL_DRIVER",
+          "STM32H743xx"
+        ],
+        "libList": []
+      }
+    }
+  },
+  "version": "3.6"
+}

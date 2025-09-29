@@ -1,0 +1,5 @@
+../APP/task/UM960samplingtask.c:25:6:UM960SamplingTaskFunc	8	static
+../APP/task/UM960samplingtask.c:45:6:my_gnss_message_handler	24	static
+../APP/task/UM960samplingtask.c:74:9:GNSSInit	8	static
+../APP/task/UM960samplingtask.c:84:6:IRQHandlerFunc	4	static
+../APP/task/UM960samplingtask.c:91:6:ring_buffer_update_head_from_dma	16	static

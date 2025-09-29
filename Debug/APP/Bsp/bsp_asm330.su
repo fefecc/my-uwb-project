@@ -1,0 +1,4 @@
+../APP/Bsp/bsp_asm330.c:12:13:SPI_CS_Control	16	static
+../APP/Bsp/bsp_asm330.c:19:16:Asm330_write	32	static
+../APP/Bsp/bsp_asm330.c:41:16:Asm330_read	32	static
+../APP/Bsp/bsp_asm330.c:65:9:Asm330_Drive_Init	8	static
