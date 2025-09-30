@@ -1,5 +1,3 @@
-../APP/task/UM960samplingtask.c:25:6:UM960SamplingTaskFunc	1
-../APP/task/UM960samplingtask.c:45:6:my_gnss_message_handler	3
-../APP/task/UM960samplingtask.c:74:9:GNSSInit	1
-../APP/task/UM960samplingtask.c:84:6:IRQHandlerFunc	2
-../APP/task/UM960samplingtask.c:91:6:ring_buffer_update_head_from_dma	1
+../APP/task/UM960samplingtask.c:31:6:UM960SamplingTaskFunc	17
+../APP/task/UM960samplingtask.c:52:6:my_gnss_message_handler	3
+../APP/task/UM960samplingtask.c:82:9:GNSSInit	1

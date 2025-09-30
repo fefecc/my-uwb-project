@@ -4,11 +4,12 @@
   "dependenceList": [],
   "srcDirs": [
     "APP",
-    "Thrid/asm330",
     "Core",
+    "Drivers",
     "FATFS",
     "Middlewares",
-    "Drivers"
+    "Thrid/asm330",
+    "Thrid/decadriver"
   ],
   "virtualFolder": {
     "name": "<virtual_root>",
@@ -74,7 +75,8 @@
           "APP/task",
           "Thrid/asm330",
           "Core/Inc",
-          "FATFS/Target"
+          "FATFS/Target",
+          "Thrid/decadriver"
         ],
         "libList": [],
         "defineList": [

@@ -94,7 +94,7 @@ int16_t Imu_Init(void) {
   uint8_t IDdata;
   asm330lhh_device_id_get(&dev_ctx, &IDdata);
 
-  if (IDdata != 0x6B) {
+  if (IDdata != asm330_id) {
     printf("ASM330 Init error\r\n");
     return -1;
   }

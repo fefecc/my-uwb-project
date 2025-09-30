@@ -7,6 +7,8 @@
 #include "queue.h"
 #include "task.h"
 
+#define asm330_id 0x6B
+
 // IMU原始数据结构体
 typedef struct {
   int16_t accel[3];

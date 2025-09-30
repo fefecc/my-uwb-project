@@ -1,2 +1,2 @@
 ../APP/task/imusamplingtask.c:30:9:IMUSamplingTaskFunc	3
-../APP/task/imusamplingtask.c:68:9:Imu_Init	3
+../APP/task/imusamplingtask.c:66:9:Imu_Init	3
