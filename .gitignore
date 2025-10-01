@@ -9,7 +9,7 @@
 /bin
 /obj
 /out
-
+/Debug
 # eide template
 *.ept
 *.eide-template
