@@ -1,10 +1,16 @@
 #ifndef _DW1000SAMPLING_H_
 #define _DW1000SAMPLING_H_
 
-#include "deca_device_api.h"
-#include "deca_param_types.h"
-#include "deca_regs.h"
-#include "deca_types.h"
-#include "deca_version.h"
+#include "main.h"
 
+typedef struct
+{
+    uint16_t ANCHOR_TAG; //{1 anchor 0 tag}
+    uint16_t ID;         // 设备编号
+
+} UserSet;
+
+void DW1000samplingtask(void *argument);
+void Tx_Simple_Rx_Callback(void);
+void Tx_Simple_Rx_Callback(void);
 #endif

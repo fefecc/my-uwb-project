@@ -19,10 +19,9 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "FreeRTOS.h"
-
-#include "cmsis_os.h"
-#include "main.h"
 #include "task.h"
+#include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -60,30 +59,30 @@ extern TIM_HandleTypeDef htim16;
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
-    .name = "defaultTask",
+    .name       = "defaultTask",
     .stack_size = 128 * 4,
-    .priority = (osPriority_t)osPriorityIdle,
+    .priority   = (osPriority_t)osPriorityNormal,
 };
 /* Definitions for IMU */
 osThreadId_t IMUHandle;
 const osThreadAttr_t IMU_attributes = {
-    .name = "IMU",
+    .name       = "IMU",
     .stack_size = 256 * 4,
-    .priority = (osPriority_t)osPriorityHigh,
+    .priority   = (osPriority_t)osPriorityHigh,
 };
 /* Definitions for SDMMC */
 osThreadId_t SDMMCHandle;
 const osThreadAttr_t SDMMC_attributes = {
-    .name = "SDMMC",
+    .name       = "SDMMC",
     .stack_size = 1024 * 4,
-    .priority = (osPriority_t)osPriorityBelowNormal,
+    .priority   = (osPriority_t)osPriorityBelowNormal,
 };
 /* Definitions for GNSS */
 osThreadId_t GNSSHandle;
 const osThreadAttr_t GNSS_attributes = {
-    .name = "GNSS",
+    .name       = "GNSS",
     .stack_size = 1024 * 4,
-    .priority = (osPriority_t)osPriorityBelowNormal,
+    .priority   = (osPriority_t)osPriorityNormal,
 };
 
 /* Private function prototypes -----------------------------------------------*/
@@ -91,20 +90,29 @@ const osThreadAttr_t GNSS_attributes = {
 /* Definitions for IMUdeal */
 osThreadId_t IMUDealHandle;
 const osThreadAttr_t IMuUDeal_attributes = {
-    .name = "IMUDeal",
+    .name       = "IMUDeal",
     .stack_size = 1024 * 4,
-    .priority = (osPriority_t)osPriorityNormal,
+    .priority   = (osPriority_t)osPriorityNormal,
 };
 
 osThreadId_t InitHandle;
 const osThreadAttr_t Init_attributes = {
-    .name = "Init",
+    .name       = "Init",
     .stack_size = 256 * 4,
-    .priority = (osPriority_t)osPriorityRealtime,
+    .priority   = (osPriority_t)osPriorityRealtime,
+};
+
+osThreadId_t dw1000samplingtaskHandle;
+const osThreadAttr_t dw1000sampling_attributes = {
+    .name       = "dw1000sampling",
+    .stack_size = 1024 * 4,
+    .priority   = (osPriority_t)osPriorityHigh,
 };
 
 void InitTask(void *argument);
 void IMUDataDealTask(void *argument);
+
+extern void DW1000samplingtask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -119,61 +127,62 @@ void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
  * @param  None
  * @retval None
  */
-void MX_FREERTOS_Init(void) {
-  /* USER CODE BEGIN Init */
+void MX_FREERTOS_Init(void)
+{
+    /* USER CODE BEGIN Init */
 
-  /* USER CODE END Init */
+    /* USER CODE END Init */
 
-  /* USER CODE BEGIN RTOS_MUTEX */
-  /* add mutexes, ... */
+    /* USER CODE BEGIN RTOS_MUTEX */
+    /* add mutexes, ... */
 
-  /* USER CODE END RTOS_MUTEX */
+    /* USER CODE END RTOS_MUTEX */
 
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
-  /* add semaphores, ... */
+    /* USER CODE BEGIN RTOS_SEMAPHORES */
+    /* add semaphores, ... */
 
-  /* USER CODE END RTOS_SEMAPHORES */
+    /* USER CODE END RTOS_SEMAPHORES */
 
-  /* USER CODE BEGIN RTOS_TIMERS */
-  /* start timers, add new ones, ... */
+    /* USER CODE BEGIN RTOS_TIMERS */
+    /* start timers, add new ones, ... */
 
-  /* USER CODE END RTOS_TIMERS */
+    /* USER CODE END RTOS_TIMERS */
 
-  /* USER CODE BEGIN RTOS_QUEUES */
-  /* add queues, ... */
+    /* USER CODE BEGIN RTOS_QUEUES */
+    /* add queues, ... */
 
-  gnss_data_queue = xQueueCreate(10, sizeof(GNSS_Message_t));
+    gnss_data_queue = xQueueCreate(10, sizeof(GNSS_Message_t));
 
-  xIMUDataQueue = xQueueCreate(128, sizeof(IMUOrigData_t));  // 128 帧
+    xIMUDataQueue = xQueueCreate(128, sizeof(IMUOrigData_t)); // 128 帧
 
-  IMUDataToSDTaskQueue =
-      xQueueCreate(64, sizeof(MsgIMU_t));  // 64 帧 一帧 49字节
+    IMUDataToSDTaskQueue =
+        xQueueCreate(64, sizeof(MsgIMU_t)); // 64 帧 一帧 49字节
 
-  /* USER CODE END RTOS_QUEUES */
+    /* USER CODE END RTOS_QUEUES */
 
-  /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle =
-      osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+    /* Create the thread(s) */
+    /* creation of defaultTask */
+    defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-  /* creation of IMU */
-  IMUHandle = osThreadNew(IMUTask, NULL, &IMU_attributes);
+    /* creation of IMU */
+    IMUHandle = osThreadNew(IMUTask, NULL, &IMU_attributes);
 
-  /* creation of SDMMC */
-  SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
+    /* creation of SDMMC */
+    SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
 
-  /* creation of GNSS */
-  GNSSHandle = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
+    /* creation of GNSS */
+    GNSSHandle = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
 
-  /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
-  IMUDealHandle = osThreadNew(IMUDataDealTask, NULL, &IMuUDeal_attributes);
-  InitHandle = osThreadNew(InitTask, NULL, &Init_attributes);
-  /* USER CODE END RTOS_THREADS */
+    /* USER CODE BEGIN RTOS_THREADS */
+    /* add threads, ... */
+    IMUDealHandle            = osThreadNew(IMUDataDealTask, NULL, &IMuUDeal_attributes);
+    InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
+    dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
+    /* USER CODE END RTOS_THREADS */
 
-  /* USER CODE BEGIN RTOS_EVENTS */
-  /* add events, ... */
-  /* USER CODE END RTOS_EVENTS */
+    /* USER CODE BEGIN RTOS_EVENTS */
+    /* add events, ... */
+    /* USER CODE END RTOS_EVENTS */
 }
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -183,14 +192,15 @@ void MX_FREERTOS_Init(void) {
  * @retval None
  */
 /* USER CODE END Header_StartDefaultTask */
-void StartDefaultTask(void *argument) {
-  /* USER CODE BEGIN StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+    /* USER CODE BEGIN StartDefaultTask */
 
-  /* Infinite loop */
-  for (;;) {
-    osDelay(1);
-  }
-  /* USER CODE END StartDefaultTask */
+    /* Infinite loop */
+    for (;;) {
+        osDelay(1);
+    }
+    /* USER CODE END StartDefaultTask */
 }
 
 /* USER CODE BEGIN Header_IMUTask */
@@ -200,15 +210,16 @@ void StartDefaultTask(void *argument) {
  * @retval None
  */
 /* USER CODE END Header_IMUTask */
-void IMUTask(void *argument) {
-  /* USER CODE BEGIN IMUTask */
+void IMUTask(void *argument)
+{
+    /* USER CODE BEGIN IMUTask */
 
-  IMUSamplingTaskFunc(argument);
-  /* Infinite loop */
-  for (;;) {
-    osDelay(1);
-  }
-  /* USER CODE END IMUTask */
+    IMUSamplingTaskFunc(argument);
+    /* Infinite loop */
+    for (;;) {
+        osDelay(1);
+    }
+    /* USER CODE END IMUTask */
 }
 
 /* USER CODE BEGIN Header_SDMMCTask */
@@ -218,18 +229,19 @@ void IMUTask(void *argument) {
  * @retval None
  */
 /* USER CODE END Header_SDMMCTask */
-void SDMMCTask(void *argument) {
-  /* USER CODE BEGIN SDMMCTask */
-  /* Infinite loop */
-  FatFs_Check();
-  SDCardTaskFunc();
-  // FatFs_FileTest();
-  // sd_wirte_IMU();
+void SDMMCTask(void *argument)
+{
+    /* USER CODE BEGIN SDMMCTask */
+    /* Infinite loop */
+    FatFs_Check();
+    SDCardTaskFunc();
+    // FatFs_FileTest();
+    // sd_wirte_IMU();
 
-  for (;;) {
-    osDelay(1);
-  }
-  /* USER CODE END SDMMCTask */
+    for (;;) {
+        osDelay(1);
+    }
+    /* USER CODE END SDMMCTask */
 }
 
 /* USER CODE BEGIN Header_GNSSTask */
@@ -239,50 +251,56 @@ void SDMMCTask(void *argument) {
  * @retval None
  */
 /* USER CODE END Header_GNSSTask */
-void GNSSTask(void *argument) {
-  /* USER CODE BEGIN GNSSTask */
+void GNSSTask(void *argument)
+{
+    /* USER CODE BEGIN GNSSTask */
 
-  UM960SamplingTaskFunc();
+    UM960SamplingTaskFunc();
 
-  /* Infinite loop */
-  for (;;) {
-    // ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    /* Infinite loop */
+    for (;;) {
+        // ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    // UartRx_CopyToRB();
+        // UartRx_CopyToRB();
 
-    // ParseFrames();
+        // ParseFrames();
 
-    osDelay(1);
-  }
-  /* USER CODE END GNSSTask */
+        osDelay(1);
+    }
+    /* USER CODE END GNSSTask */
 }
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
-void IMUDataDealTask(void *argument) {
-  imuDataDealTaskFunc();
-  for (;;) {
-    osDelay(1);
-  }
+void IMUDataDealTask(void *argument)
+{
+    imuDataDealTaskFunc();
+    for (;;) {
+        osDelay(1);
+    }
 }
 
-void InitTask(void *argument) {
-  // 此线程优先级极高，在线程中完成各个中断的初始化，然后删除该线程
-  //  中断初始化代码，禁止在main函数中初始化
-  GNSSInit();
-  HAL_TIM_Base_Start_IT(&htim16);
+void InitTask(void *argument)
+{
+    // 此线程优先级极高，在线程中完成各个中断的初始化，然后删除该线程
+    //  中断初始化代码，禁止在main函数中初始化
+    GNSSInit();
+    HAL_TIM_Base_Start_IT(&htim16);
 
-  // 2. 在所有准备工作都完成后，最后再使能中断
-  HAL_NVIC_SetPriority(EXTI2_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI2_IRQn);
+    // 2. 在所有准备工作都完成后，最后再使能中断
+    HAL_NVIC_SetPriority(EXTI2_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(EXTI2_IRQn);
 
-  HAL_NVIC_SetPriority(EXTI4_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI4_IRQn);
+    HAL_NVIC_SetPriority(EXTI4_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(EXTI4_IRQn);
 
-  HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
-  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+    HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
+    HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 
-  // 3. 删除任务
-  osThreadTerminate(osThreadGetId());
+    // HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
+    // HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
+    // 3. 删除任务
+    osThreadTerminate(osThreadGetId());
 }
 /* USER CODE END Application */

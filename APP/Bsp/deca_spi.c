@@ -13,15 +13,17 @@
 #include "deca_spi.h"
 #include "deca_device_api.h"
 #include "deca_sleep.h"
+#include "spi.h"
+
+#define DW1000_CS_GPIO_Port GPIOB
+#define DW1000_CS_Pin       GPIO_PIN_12
+#define DW1000_SPI_HANDLE   &hspi2
+#define SPI_TIMEOUT         0xffff
+#define SPI_ERROR           -1
 
 extern decaIrqStatus_t decamutexon(void);
 extern void decamutexoff(decaIrqStatus_t s);
 
-int writetospi_serial(uint16 headerLength, const uint8 *headerBuffer,
-                      uint32 bodylength, const uint8 *bodyBuffer);
-
-int readfromspi_serial(uint16 headerLength, const uint8 *headerBuffer,
-                       uint32 readlength, uint8 *readBuffer);
 /*!
  * ------------------------------------------------------------------------------------------------------------------
  * Function: openspi()
@@ -29,7 +31,7 @@ int readfromspi_serial(uint16 headerLength, const uint8 *headerBuffer,
  * Low level abstract function to open and initialise access to the SPI device.
  * returns 0 for success, or -1 for error
  */
-int openspi(/*SPI_TypeDef* SPIx*/)
+int openspi(void)
 {
     // done by port.c, default SPI used is SPI1
 
@@ -70,25 +72,26 @@ int writetospi_serial(uint16 headerLength, const uint8 *headerBuffer,
 
     stat = decamutexon();
 
-    // SPIx_CS_GPIO->BRR = SPIx_CS;
+    // 1. 开始SPI事务：将CS引脚拉低
+    HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_RESET);
 
-    // for (i = 0; i < headerLength; i++) {
-    //   SPIx->DR = headerBuffer[i];
+    // 2. 发送命令头
+    // 使用(uint8_t*)进行强制类型转换以匹配HAL函数的参数类型
+    if (HAL_SPI_Transmit(DW1000_SPI_HANDLE, (uint8_t *)headerBuffer, headerLength, SPI_TIMEOUT) != HAL_OK) {
+        // 如果发送失败，立即结束事务并返回错误
+        HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
+        return SPI_ERROR;
+    }
 
-    //   while ((SPIx->SR & SPI_I2S_FLAG_RXNE) == (uint16_t)RESET);
+    // 3. 发送数据体
+    if (HAL_SPI_Transmit(DW1000_SPI_HANDLE, (uint8_t *)bodyBuffer, bodylength, SPI_TIMEOUT) != HAL_OK) {
+        // 如果发送失败，立即结束事务并返回错误
+        HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
+        return SPI_ERROR;
+    }
 
-    //   SPIx->DR;
-    // }
-
-    // for (i = 0; i < bodylength; i++) {
-    //   SPIx->DR = bodyBuffer[i];
-
-    //   while ((SPIx->SR & SPI_I2S_FLAG_RXNE) == (uint16_t)RESET);
-
-    //   SPIx->DR;
-    // }
-
-    // SPIx_CS_GPIO->BSRR = SPIx_CS;
+    // 4. 结束SPI事务：将CS引脚拉高
+    HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
 
     decamutexoff(stat);
 
@@ -113,30 +116,25 @@ int readfromspi_serial(uint16 headerLength, const uint8 *headerBuffer,
 
     stat = decamutexon();
 
-    /* Wait for SPIx Tx buffer empty */
-    // while (port_SPIx_busy_sending());
+    HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_RESET);
 
-    // SPIx_CS_GPIO->BRR = SPIx_CS;
+    // 2. 发送命令头。在发送的同时，DW1000也会在MISO线上返回数据，但我们忽略这些数据。
+    if (HAL_SPI_Transmit(DW1000_SPI_HANDLE, (uint8_t *)headerBuffer, headerLength, SPI_TIMEOUT) != HAL_OK) {
+        // 如果发送失败，立即结束事务并返回错误
+        HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
+        return SPI_ERROR;
+    }
 
-    // for (i = 0; i < headerLength; i++) {
-    //   SPIx->DR = headerBuffer[i];
+    // 3. 接收数据。为了接收数据，主机必须发送等量的虚拟数据(dummy bytes)来产生时钟信号。
+    // HAL_SPI_Receive函数会自动处理发送虚拟数据的过程。
+    if (HAL_SPI_Receive(DW1000_SPI_HANDLE, readBuffer, readlength, SPI_TIMEOUT) != HAL_OK) {
+        // 如果接收失败，立即结束事务并返回错误
+        HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
+        return SPI_ERROR;
+    }
 
-    //   // while((SPIx->SR & SPI_I2S_FLAG_RXNE) == (uint16_t)RESET);
-    //   while (SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_RXNE) == RESET);
-
-    //   readBuffer[0] = SPIx->DR;  // Dummy read as we write the header
-    // }
-
-    // for (i = 0; i < readlength; i++) {
-    //   SPIx->DR = 0;  // Dummy write as we read the message body
-
-    //   while ((SPIx->SR & SPI_I2S_FLAG_RXNE) == (uint16_t)RESET);
-
-    //   readBuffer[i] =
-    //       SPIx->DR;  // port_SPIx_receive_data(); //this clears RXNE bit
-    // }
-
-    // SPIx_CS_GPIO->BSRR = SPIx_CS;
+    // 4. 结束SPI事务：将CS引脚拉高
+    HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
 
     decamutexoff(stat);
 

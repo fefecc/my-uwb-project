@@ -19,26 +19,15 @@ extern "C" {
 #endif
 
 #include "deca_types.h"
+#include "main.h"
 
-#define DECA_MAX_SPI_HEADER_LENGTH      (3)                     // max number of bytes in header (for formating & sizing)
+#define DECA_MAX_SPI_HEADER_LENGTH (3) // max number of bytes in header (for formating & sizing)
 
-/*! ------------------------------------------------------------------------------------------------------------------
- * Function: openspi()
- *
- * Low level abstract function to open and initialise access to the SPI device.
- * returns 0 for success, or -1 for error
- */
-int openspi(void) ;
+#define writetospi_serial          writetospi
+#define readfromspi_serial         readfromspi
 
-/*! ------------------------------------------------------------------------------------------------------------------
- * Function: closespi()
- *
- * Low level abstract function to close the the SPI device.
- * returns 0 for success, or -1 for error
- */
-int closespi(void) ;
 int writetospi_serial(uint16 headerLength, const uint8 *headerBuffer,
-                      uint32 bodylength, const uint8 *bodyBuffer) ;
+                      uint32 bodylength, const uint8 *bodyBuffer);
 
 int readfromspi_serial(uint16 headerLength, const uint8 *headerBuffer,
                        uint32 readlength, uint8 *readBuffer);

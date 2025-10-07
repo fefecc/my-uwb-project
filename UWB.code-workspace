@@ -4,6 +4,15 @@
             "path": "."
         }
     ],
-    "settings": {},
+    "settings": {
+        "files.associations": {
+            "cmath": "c",
+            "cstdlib": "c",
+            "trilateration.h": "c",
+            "math.h": "c",
+            "dw1000samplingtask.h": "c",
+            "common_header.h": "c"
+        }
+    },
     "extensions": {}
 }
