@@ -43,8 +43,11 @@ static struct distance_struct {
 
 static srd_msg_dsss *msg_f;
 
+extern volatile uint64_t rxtimestamptemp;
+extern volatile uint64_t txtimestamptemp;
+
 /* Private functions ---------------------------------------------------------*/
-void Simple_Rx_Callback()
+void Simple_Rx_Callback(void)
 {
     uint32 status_reg = 0, i = 0;
 
@@ -52,13 +55,14 @@ void Simple_Rx_Callback()
         rx_buffer[i] = '\0';
     }
     /* Activate reception immediately. See NOTE 2 below. */
-    dwt_enableframefilter(DWT_FF_RSVD_EN); // disable recevie
+    dwt_enableframefilter(DWT_FF_RSVD_EN | DWT_FF_DATA_EN); // disable recevie
     status_reg = dwt_read32bitreg(SYS_STATUS_ID);
 
     if (status_reg & SYS_STATUS_RXFCG) // good message
     {
         /* A frame has been received, copy it to our local buffer. */
         frame_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFL_MASK_1023;
+
         if (frame_len <= FRAME_LEN_MAX) {
             dwt_readrxdata(rx_buffer, frame_len, 0);
             msg_f = (srd_msg_dsss *)rx_buffer;
@@ -75,8 +79,8 @@ void Simple_Rx_Callback()
                     if (bphero_distance[msg_f->sourceAddr[0]].count > 0) {
                         msg_f_send.messageData[2] = 'V';
                         int distance0             = (int)(bphero_distance[msg_f->sourceAddr[0]].rx_distance * 100); // distance 0
-                        msg_f_send.messageData[3] = (uint8)(distance0 / 100);                                       // ����m
-                        msg_f_send.messageData[4] = (uint8)(distance0 % 100);                                       // С��cm
+                        msg_f_send.messageData[3] = (uint8)(distance0 / 100);                                       //
+                        msg_f_send.messageData[4] = (uint8)(distance0 % 100);                                       //
                     } else {
                         msg_f_send.messageData[2] = 'N';
                         msg_f_send.messageData[3] = 0xFF;
@@ -87,7 +91,9 @@ void Simple_Rx_Callback()
                     /* Start transmission. */
                     dwt_starttx(DWT_START_TX_IMMEDIATE);
                     // MUST WAIT!!!!!
-                    while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_TXFRS))) {};
+                    while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_TXFRS))) {
+                        osDelay(1);
+                    };
                     dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS | SYS_STATUS_RXFCG);
 
                     Handle_TimeStamp();
@@ -98,7 +104,7 @@ void Simple_Rx_Callback()
         }
         // enable recive again
         dwt_enableframefilter(DWT_FF_DATA_EN);
-        dwt_setrxtimeout(0);
+
         dwt_rxenable(0);
     } else {
         // clear error flag
@@ -129,9 +135,10 @@ int rx_main(void)
 {
     bphero_distance[0].rx_distance = 0;
     // Enable RX
-    dwt_setrxtimeout(0);
+    dwt_setrxtimeout(0); // 不使能超时模式，一直等
     dwt_enableframefilter(DWT_FF_DATA_EN);
-    dwt_rxenable(0);
+    dwt_rxenable(0); // 直接启动，不延时
+
     // Set Rx callback
     // bphero_setcallbacks(Simple_Rx_Callback);
     while (1) {

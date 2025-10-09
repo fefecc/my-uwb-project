@@ -6,6 +6,9 @@
 #include "task.h"
 #include "queue.h"
 
+// #define TX_Main
+#define RX_Main
+
 typedef struct
 {
     uint16_t ANCHOR_TAG; //{1 anchor 0 tag}

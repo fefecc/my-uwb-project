@@ -6,9 +6,7 @@
     ],
     "settings": {
         "files.associations": {
-            "dwm1000_timestamp.h": "c",
-            "compare": "c",
-            "deca_regs.h": "c"
+            "dw1000samplingtask.h": "c"
         }
     },
     "extensions": {}

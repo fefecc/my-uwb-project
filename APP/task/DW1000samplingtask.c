@@ -16,9 +16,16 @@ extern int tx_main(void);
 void DW1000samplingtask(void *argument)
 {
     dw1000samplingTaskNotifyHandle = xTaskGetCurrentTaskHandle(); // 获取当前的线程句柄
-    BPhero_UWB_Message_Init();
-    BPhero_UWB_Init(); // dwm1000 init related
+    BPhero_UWB_Message_Init();                                    // 消息结构体初始化
+    BPhero_UWB_Init();                                            // dwm1000 init related
 
-    rx_main();
-    // tx_main();
+    while (1) {
+#ifdef RX_Main
+        rx_main();
+#endif
+
+#ifdef TX_Main
+        tx_main();
+#endif
+    }
 }

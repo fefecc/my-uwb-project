@@ -37,8 +37,7 @@ typedef int bool;
 
 #ifndef MAX_MESSAGE
 #define MAX_MESSAGE 2
-struct time_timestamp
-{
+struct time_timestamp {
     uint32 tx_ts[MAX_MESSAGE];
     uint32 rx_ts[MAX_MESSAGE];
     uint16 shortaddr;
@@ -53,8 +52,8 @@ struct time_timestamp
 #endif
 
 #ifndef FIRST_TX
-#define FIRST_TX 2
-#define FIRST_RX 6
+#define FIRST_TX  2
+#define FIRST_RX  6
 #define STATISTIC 10
 #endif
 
