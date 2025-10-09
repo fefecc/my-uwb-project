@@ -1,4 +1,0 @@
-../APP/Bsp/deca_spi.c:33:5:openspi	4	static
-../APP/Bsp/deca_spi.c:47:5:closespi	4	static
-../APP/Bsp/deca_spi.c:64:5:writetospi_serial	32	static
-../APP/Bsp/deca_spi.c:107:5:readfromspi_serial	32	static

@@ -50,7 +50,12 @@ APP/Bsp/EXITcallback.o: ../APP/Bsp/EXITcallback.c \
  ../Middlewares/Third_Party/FreeRTOS/Source/include/queue.h \
  ../Middlewares/Third_Party/FreeRTOS/Source/include/task.h \
  ../Middlewares/Third_Party/FreeRTOS/Source/include/list.h \
- ../Middlewares/Third_Party/FreeRTOS/Source/include/task.h
+ ../Middlewares/Third_Party/FreeRTOS/Source/include/task.h \
+ C:/Users/fefe/Desktop/vscodepro/UWB/APP/task/DW1000samplingtask.h \
+ C:/Users/fefe/Desktop/vscodepro/UWB/APP/UWB/bphero_uwb.h \
+ C:/Users/fefe/Desktop/vscodepro/UWB/APP/UWB/frame_header.h \
+ C:/Users/fefe/Desktop/vscodepro/UWB/APP/UWB/common_header.h \
+ C:/Users/fefe/Desktop/vscodepro/UWB/Thrid/decadriver/deca_device_api.h
 ../APP/Bsp/EXITcallback.h:
 ../Middlewares/Third_Party/FreeRTOS/Source/include/FreeRTOS.h:
 ../Core/Inc/FreeRTOSConfig.h:
@@ -104,3 +109,8 @@ C:/Users/fefe/Desktop/vscodepro/UWB/Thrid/asm330/asm330lhh_reg.h:
 ../Middlewares/Third_Party/FreeRTOS/Source/include/task.h:
 ../Middlewares/Third_Party/FreeRTOS/Source/include/list.h:
 ../Middlewares/Third_Party/FreeRTOS/Source/include/task.h:
+C:/Users/fefe/Desktop/vscodepro/UWB/APP/task/DW1000samplingtask.h:
+C:/Users/fefe/Desktop/vscodepro/UWB/APP/UWB/bphero_uwb.h:
+C:/Users/fefe/Desktop/vscodepro/UWB/APP/UWB/frame_header.h:
+C:/Users/fefe/Desktop/vscodepro/UWB/APP/UWB/common_header.h:
+C:/Users/fefe/Desktop/vscodepro/UWB/Thrid/decadriver/deca_device_api.h:

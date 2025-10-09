@@ -7,7 +7,7 @@
 #include "DW1000samplingtask.h"
 #include "bphero_uwb.h"
 
-extern void (*bphero_rxcallback)(void);
+extern void uwb_isr_handler(void);
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
@@ -25,8 +25,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     }
 
     else if (GPIO_Pin == GPIO_PIN_8) {
-        if (bphero_rxcallback != NULL) { bphero_rxcallback(); }
-
+        uwb_isr_handler();
     }
 
     else {

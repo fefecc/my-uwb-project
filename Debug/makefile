@@ -24,6 +24,7 @@ RM := rm -rf
 -include Core/Src/subdir.mk
 -include APP/task/subdir.mk
 -include APP/common/subdir.mk
+-include APP/UWB/subdir.mk
 -include APP/Bsp/subdir.mk
 -include objects.mk
 
@@ -74,7 +75,7 @@ main-build: UWB.elf secondary-outputs
 
 # Tool invocations
 UWB.elf UWB.map: $(OBJS) $(USER_OBJS) C:\Users\fefe\Desktop\vscodepro\UWB\STM32H743VITX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "UWB.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"C:\Users\fefe\Desktop\vscodepro\UWB\STM32H743VITX_FLASH.ld" --specs=nosys.specs -Wl,-Map="UWB.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+	arm-none-eabi-gcc -o "UWB.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"C:\Users\fefe\Desktop\vscodepro\UWB\STM32H743VITX_FLASH.ld" --specs=nosys.specs -Wl,-Map="UWB.map" -Wl,--gc-sections -static -u _printf_float --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

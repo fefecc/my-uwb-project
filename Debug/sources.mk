@@ -23,6 +23,7 @@ C_DEPS :=
 # Every subdirectory with source files must be described here
 SUBDIRS := \
 APP/Bsp \
+APP/UWB \
 APP/common \
 APP/task \
 Core/Src \

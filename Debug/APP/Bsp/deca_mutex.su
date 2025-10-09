@@ -1,2 +1,0 @@
-../APP/Bsp/deca_mutex.c:52:17:decamutexon	16	static
-../APP/Bsp/deca_mutex.c:77:6:decamutexoff	16	static

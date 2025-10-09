@@ -133,8 +133,16 @@ int rx_main(void)
     dwt_enableframefilter(DWT_FF_DATA_EN);
     dwt_rxenable(0);
     // Set Rx callback
-    bphero_setcallbacks(Simple_Rx_Callback);
+    // bphero_setcallbacks(Simple_Rx_Callback);
     while (1) {
+        if (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100)) > 0) {
+            // 被 ISR 唤醒，在这里处理 UWB 协议状态机
+            // 例如：检查接收到的数据，准备下一帧发送...
+            Simple_Rx_Callback();
+        } else {
+            // 等待超时，处理超时逻辑
+            // handle_uwb_timeout();
+        }
     }
 }
 

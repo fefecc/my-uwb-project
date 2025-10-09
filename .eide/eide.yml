@@ -5,12 +5,11 @@ deviceName: null
 packDir: null
 srcDirs:
   - APP
-  - Thrid/asm330
   - Core
-  - Thrid/decadriver
+  - Drivers
   - FATFS
   - Middlewares
-  - Drivers
+  - Thrid
 virtualFolder:
   name: <virtual_root>
   files: []
@@ -44,6 +43,7 @@ targets:
         - Core/Inc
         - FATFS/Target
         - Thrid/decadriver
+        - APP/UWB
       libList: []
     excludeList: []
     toolchain: GCC
@@ -76,7 +76,7 @@ targets:
           linker:
             $outputTaskExcludes:
               - .bin
-            LD_FLAGS: ""
+            LD_FLAGS: -u _printf_float
             LIB_FLAGS: ""
             output-format: elf
             remove-unused-input-sections: true

@@ -6,12 +6,9 @@
     ],
     "settings": {
         "files.associations": {
-            "cmath": "c",
-            "cstdlib": "c",
-            "trilateration.h": "c",
-            "math.h": "c",
-            "dw1000samplingtask.h": "c",
-            "common_header.h": "c"
+            "dwm1000_timestamp.h": "c",
+            "compare": "c",
+            "deca_regs.h": "c"
         }
     },
     "extensions": {}

@@ -2,7 +2,7 @@ Thrid/decadriver/deca_device.o: ../Thrid/decadriver/deca_device.c \
  ../Thrid/decadriver/deca_device_api.h \
  ../Thrid/decadriver/deca_param_types.h ../Thrid/decadriver/deca_types.h \
  ../Thrid/decadriver/deca_regs.h ../Thrid/decadriver/deca_version.h \
- C:/Users/fefe/Desktop/vscodepro/UWB/APP/Bsp/deca_sleep.h \
+ C:/Users/fefe/Desktop/vscodepro/UWB/APP/UWB/deca_sleep.h \
  ../Core/Inc/main.h ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h \
  ../Core/Inc/stm32h7xx_hal_conf.h \
  ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal_rcc.h \
@@ -46,7 +46,7 @@ Thrid/decadriver/deca_device.o: ../Thrid/decadriver/deca_device.c \
 ../Thrid/decadriver/deca_types.h:
 ../Thrid/decadriver/deca_regs.h:
 ../Thrid/decadriver/deca_version.h:
-C:/Users/fefe/Desktop/vscodepro/UWB/APP/Bsp/deca_sleep.h:
+C:/Users/fefe/Desktop/vscodepro/UWB/APP/UWB/deca_sleep.h:
 ../Core/Inc/main.h:
 ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h:
 ../Core/Inc/stm32h7xx_hal_conf.h:

@@ -675,10 +675,10 @@ int GetLocation(vec3d *best_solution, int use4thAnchor, vec3d *anchorArray, int 
     // qDebug() << "GetLocation" << r1 << r2 << r3 << r4;
 
     // r4 = r1;
-    printf("r1=%f , r2=%f, r3=%f,  r4=%f\r\n", r1, r2, r3, r4);
-    printf("Anthor0:x = %f,y = %f\r\n", p1.x, p1.y);
-    printf("Anthor1:x = %f,y = %f\r\n", p2.x, p2.y);
-    printf("Anthor2:x = %f,y = %f\r\n", p3.x, p3.y);
+//    printf("r1=%f , r2=%f, r3=%f,  r4=%f\r\n", r1, r2, r3, r4);
+//    printf("Anthor0:x = %f,y = %f\r\n", p1.x, p1.y);
+//    printf("Anthor1:x = %f,y = %f\r\n", p2.x, p2.y);
+//    printf("Anthor2:x = %f,y = %f\r\n", p3.x, p3.y);
     /* get the best location using 3 or 4 spheres and keep it as know_best_location */
     result = deca_3dlocate(&o1, &o2, best_solution, &error, &best_3derror, &best_gdoprate,
                            p1, r1, p2, r2, p3, r3, p4, r1, &combination);
