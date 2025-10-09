@@ -1,6 +1,0 @@
-../APP/common/gnss_parser.c:7:6:rb_init	1
-../APP/common/gnss_parser.c:15:6:rb_write_byte	2
-../APP/common/gnss_parser.c:27:6:rb_read_byte	2
-../APP/common/gnss_parser.c:95:10:calculate_crc32	2
-../APP/common/gnss_parser.c:109:6:gnss_parser_init	1
-../APP/common/gnss_parser.c:119:6:gnss_parser_process	19

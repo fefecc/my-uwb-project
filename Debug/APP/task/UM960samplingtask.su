@@ -1,3 +1,0 @@
-../APP/task/UM960samplingtask.c:31:6:UM960SamplingTaskFunc	8	static
-../APP/task/UM960samplingtask.c:52:6:my_gnss_message_handler	24	static
-../APP/task/UM960samplingtask.c:82:9:GNSSInit	8	static

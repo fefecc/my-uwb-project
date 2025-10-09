@@ -1,4 +1,0 @@
-../APP/task/SDcardtask.c:24:6:FatFs_Check	3
-../APP/task/SDcardtask.c:51:6:FatFs_GetVolume	1
-../APP/task/SDcardtask.c:73:9:_512ByteFromImuDataFunc	4
-../APP/task/SDcardtask.c:144:9:SDCardTaskFunc	7

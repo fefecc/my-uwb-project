@@ -1,7 +1,0 @@
-../Core/Src/freertos.c:130:6:MX_FREERTOS_Init	8	static
-../Core/Src/freertos.c:195:6:StartDefaultTask	16	static
-../Core/Src/freertos.c:213:6:IMUTask	16	static
-../Core/Src/freertos.c:232:6:SDMMCTask	16	static
-../Core/Src/freertos.c:254:6:GNSSTask	16	static
-../Core/Src/freertos.c:275:6:IMUDataDealTask	16	static
-../Core/Src/freertos.c:283:6:InitTask	16	static

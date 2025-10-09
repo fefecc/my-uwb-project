@@ -1,7 +1,0 @@
-../APP/common/DoubleRingBuffer.c:5:5:RB_Init	32	static
-../APP/common/DoubleRingBuffer.c:23:5:RB_Write	40	static
-../APP/common/DoubleRingBuffer.c:57:8:RB_Read	32	static
-../APP/common/DoubleRingBuffer.c:76:6:RB_SwitchBuffer	16	static
-../APP/common/DoubleRingBuffer.c:83:8:RB_GetDataLength	16	static
-../APP/common/DoubleRingBuffer.c:88:5:RB_IsBufferFull	16	static
-../APP/common/DoubleRingBuffer.c:93:6:RB_ClearBufferFlag	16	static
