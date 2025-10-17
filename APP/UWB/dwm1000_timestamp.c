@@ -3,7 +3,7 @@
 /* Declaration of static functions. */
 uint64 get_tx_timestamp_u64(void);
 uint64 get_rx_timestamp_u64(void);
-void final_msg_get_ts(const uint8 *ts_field, uint32 *ts);
+void final_msg_get_ts(const uint8 *ts_field, uint64 *ts);
 void final_msg_set_ts(uint8 *ts_field, uint64 ts);
 /*! ------------------------------------------------------------------------------------------------------------------
  * @fn get_tx_timestamp_u64()
@@ -62,11 +62,11 @@ uint64 get_rx_timestamp_u64(void)
  *
  * @return none
  */
-void final_msg_get_ts(const uint8 *ts_field, uint32 *ts)
+void final_msg_get_ts(const uint8 *ts_field, uint64 *ts)
 {
     int i;
     *ts = 0;
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < 5; i++) {
         *ts += ts_field[i] << (i * 8);
     }
 }
@@ -74,8 +74,13 @@ void final_msg_get_ts(const uint8 *ts_field, uint32 *ts)
 void final_msg_set_ts(uint8 *ts_field, uint64 ts)
 {
     int i;
-    for (i = 0; i < 4; i++) {
+    for (i = 0; i < 5; i++) {
         ts_field[i] = (uint8)ts;
         ts >>= 8;
     }
+}
+
+void resp_msg_get_ts(uint8 *ts_field, uint64 ts)
+{
+    final_msg_get_ts(ts_field, &ts);
 }

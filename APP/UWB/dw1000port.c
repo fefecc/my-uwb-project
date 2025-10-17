@@ -1,4 +1,5 @@
 #include "dw1000port.h"
+#include "cmsis_os.h"
 
 void reset_DW1000(void)
 {
@@ -12,19 +13,23 @@ void reset_DW1000(void)
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(DWRSTnGPIOx, &GPIO_InitStruct);
-
+    HAL_GPIO_WritePin(DWRSTnGPIOx, DWRSTnGPIOPINx, GPIO_PIN_RESET);
+    HAL_Delay(1);
     GPIO_InitStruct.Pin   = DWRSTnGPIOPINx;
     GPIO_InitStruct.Mode  = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(DWRSTnGPIOx, &GPIO_InitStruct);
+    while (HAL_GPIO_ReadPin(DWRSTnGPIOx, DWRSTnGPIOPINx) == GPIO_PIN_RESET) {
+        HAL_Delay(1);
+    }
     HAL_Delay(2);
 }
 
 extern SPI_HandleTypeDef hspi2;
 
 #define LOW_SPEED_PRESCALER  SPI_BAUDRATEPRESCALER_64 // 表示64分频 1MHz
-#define HIGH_SPEED_PRESCALER SPI_BAUDRATEPRESCALER_4  // 表示4分频 16MHz
+#define HIGH_SPEED_PRESCALER SPI_BAUDRATEPRESCALER_16 // 表示4分频 4MHz
 
 /**
  * @brief  将SPI2设置为低速模式，用于DW1000初始化。

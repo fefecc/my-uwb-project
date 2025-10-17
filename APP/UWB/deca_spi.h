@@ -31,6 +31,10 @@ int writetospi_serial(uint16 headerLength, const uint8 *headerBuffer,
 
 int readfromspi_serial(uint16 headerLength, const uint8 *headerBuffer,
                        uint32 readlength, uint8 *readBuffer);
+int readfromspifromisr(uint16 headerLength, const uint8 *headerBuffer,
+                       uint32 readlength, uint8 *readBuffer);
+int writetospifromisr(uint16 headerLength, const uint8 *headerBuffer,
+                      uint32 bodylength, const uint8 *bodyBuffer);
 
 #ifdef __cplusplus
 }

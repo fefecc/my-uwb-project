@@ -6,19 +6,85 @@
 #include "task.h"
 #include "queue.h"
 
-// #define TX_Main
-#define RX_Main
+#include "bphero_uwb.h"
 
-typedef struct
-{
-    uint16_t ANCHOR_TAG; //{1 anchor 0 tag}
-    uint16_t ID;         // 设备编号
+// 定义邮箱结构体
+// 这个结构用来记录时间戳
+typedef struct {
+    uint8_t rxtimestamp[5];
+    uint8_t txtimestamp[5];
 
-} UserSet;
+} isr_timestamp_packet_t;
+
+// 这些数据是时间戳的40位数据
+typedef struct {
+
+    uint16_t short_addr;
+
+    /** @brief 本设备发送 Poll 帧的 40 位发送时间戳。 (由 Tag 记录) */
+    uint8_t poll_tx_ts[5];
+
+    /** @brief 本设备接收 Poll 帧的 40 位接收时间戳。 (由 Anchor 记录) */
+    uint8_t poll_rx_ts[5];
+
+    /** @brief 本设备发送 Response 帧的 40 位发送时间戳。(由 Anchor 记录/计算) */
+    uint8_t resp_tx_ts[5];
+
+    /** @brief 本设备接收 Response 帧的 40 位接收时间戳。(由 Tag 记录) */
+    uint8_t resp_rx_ts[5];
+
+    /** @brief 本设备发送 Final 帧的 40 位发送时间戳。 (由 Tag 记录) */
+    uint8_t final_tx_ts[5];
+
+    /** @brief 本设备接收 Final 帧的 40 位接收时间戳。 (由 Anchor 记录) */
+    uint8_t final_rx_ts[5];
+
+} uwb_node_profile_t;
+
+typedef struct {
+
+    /**
+     * @brief 节点的 16 位短地址。
+     */
+    uint16_t short_addr;
+
+    /** @brief 本设备发送 Poll 帧的发送时间戳。 (由 Tag 记录) */
+    uint64_t poll_tx_ts;
+
+    /** @brief 本设备接收 Poll 帧的接收时间戳。 (由 Anchor 记录) */
+    uint64_t poll_rx_ts;
+
+    /** @brief 本设备发送 Response 帧的发送时间戳。(由 Anchor 记录/计算) */
+    uint64_t resp_tx_ts;
+
+    /** @brief 本设备接收 Response 帧的接收时间戳。(由 Tag 记录) */
+    uint64_t resp_rx_ts;
+
+    /** @brief 本设备发送 Final 帧的发送时间戳。 (由 Tag 记录) */
+    uint64_t final_tx_ts;
+
+    /** @brief 本设备接收 Final 帧的接收时间戳。 (由 Anchor 记录) */
+    uint64_t final_rx_ts;
+
+} uwb_node_profile_u64_t;
+
+// 本机的数据
+typedef struct {
+    uint8 frameCtrl[2]; //  frame control bytes 00-01
+    uint8 seqNum;       //  sequence_number 02
+    uint16_t pan_id;
+    uint16_t short_addr;
+} dw1000_local_device_t;
 
 extern TaskHandle_t dw1000samplingTaskNotifyHandle;
 
 void DW1000samplingtask(void *argument);
-void Tx_Simple_Rx_Callback(void);
-void Tx_Simple_Rx_Callback(void);
+int16_t clear_node_profile(uwb_node_profile_t *node_profile);
+double calculate_distance_from_timestamps(uint64_t tag_poll_tx_ts,
+                                          uint64_t tag_resp_rx_ts,
+                                          uint64_t tag_final_tx_ts,
+                                          uint64_t anchor_poll_rx_ts,
+                                          uint64_t anchor_resp_tx_ts,
+                                          uint64_t anchor_final_rx_ts);
+
 #endif

@@ -53,7 +53,7 @@ struct time_timestamp {
 
 #ifndef FIRST_TX
 #define FIRST_TX  2
-#define FIRST_RX  6
+#define FIRST_RX  7
 #define STATISTIC 10
 #endif
 

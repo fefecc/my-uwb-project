@@ -14,6 +14,9 @@
 #include "deca_device_api.h"
 #include "deca_sleep.h"
 #include "spi.h"
+#include <string.h> //
+#include "FreeRTOS.h"
+#include "task.h"
 
 #define DW1000_CS_GPIO_Port GPIOB
 #define DW1000_CS_Pin       GPIO_PIN_12
@@ -70,32 +73,33 @@ int writetospi_serial(uint16 headerLength, const uint8 *headerBuffer,
 
     decaIrqStatus_t stat;
 
+    // 1. 创建一个足够大的临时缓冲区来合并数据
+    //    最好使用动态计算或一个足够大的固定值
+    uint8_t spi_buffer[headerLength + bodylength];
+
+    // 2. 将 header 和 body 复制到临时缓冲区中
+    memcpy(spi_buffer, headerBuffer, headerLength);
+    memcpy(spi_buffer + headerLength, bodyBuffer, bodylength);
+
     stat = decamutexon();
 
-    // 1. 开始SPI事务：将CS引脚拉低
+    // 3. 开始SPI事务：将CS引脚拉低
     HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_RESET);
 
-    // 2. 发送命令头
-    // 使用(uint8_t*)进行强制类型转换以匹配HAL函数的参数类型
-    if (HAL_SPI_Transmit(DW1000_SPI_HANDLE, (uint8_t *)headerBuffer, headerLength, SPI_TIMEOUT) != HAL_OK) {
+    // 4. 只调用一次 HAL_SPI_Transmit，发送合并后的完整数据
+    if (HAL_SPI_Transmit(DW1000_SPI_HANDLE, spi_buffer, headerLength + bodylength, SPI_TIMEOUT) != HAL_OK) {
         // 如果发送失败，立即结束事务并返回错误
         HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
+        decamutexoff(stat); // 不要忘记在错误路径中也释放互斥锁
         return SPI_ERROR;
     }
 
-    // 3. 发送数据体
-    if (HAL_SPI_Transmit(DW1000_SPI_HANDLE, (uint8_t *)bodyBuffer, bodylength, SPI_TIMEOUT) != HAL_OK) {
-        // 如果发送失败，立即结束事务并返回错误
-        HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
-        return SPI_ERROR;
-    }
-
-    // 4. 结束SPI事务：将CS引脚拉高
+    // 5. 结束SPI事务：将CS引脚拉高
     HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
 
     decamutexoff(stat);
 
-    return 0;
+    return 0; // 返回成功
 } // end writetospi()
 
 /*!
@@ -114,29 +118,121 @@ int readfromspi_serial(uint16 headerLength, const uint8 *headerBuffer,
 
     decaIrqStatus_t stat;
 
+    // 1. 准备临时的发送和接收缓冲区，大小为“命令头 + 数据体”的总长度
+    uint8_t tx_buffer[headerLength + readlength];
+    uint8_t rx_buffer[headerLength + readlength];
+
+    // 2. 构建完整的发送缓冲区
+    //    首先复制命令头
+    memcpy(tx_buffer, headerBuffer, headerLength);
+    //    然后在后面填充用于产生时钟的虚拟字节 (通常为0)
+    memset(tx_buffer + headerLength, 0x00, readlength);
+
     stat = decamutexon();
 
+    // 3. 开始SPI事务：将CS引脚拉低
     HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_RESET);
 
-    // 2. 发送命令头。在发送的同时，DW1000也会在MISO线上返回数据，但我们忽略这些数据。
-    if (HAL_SPI_Transmit(DW1000_SPI_HANDLE, (uint8_t *)headerBuffer, headerLength, SPI_TIMEOUT) != HAL_OK) {
-        // 如果发送失败，立即结束事务并返回错误
+    // 4. 只调用一次 HAL_SPI_TransmitReceive() 来完成整个“发送命令+接收数据”的过程
+    //    这保证了整个事务是连续且原子的
+    if (HAL_SPI_TransmitReceive(DW1000_SPI_HANDLE, tx_buffer, rx_buffer, headerLength + readlength, SPI_TIMEOUT) != HAL_OK) {
+        // 如果失败，立即结束事务并返回错误
         HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
+        decamutexoff(stat); // 不要忘记在错误路径中也释放互斥锁
         return SPI_ERROR;
     }
 
-    // 3. 接收数据。为了接收数据，主机必须发送等量的虚拟数据(dummy bytes)来产生时钟信号。
-    // HAL_SPI_Receive函数会自动处理发送虚拟数据的过程。
-    if (HAL_SPI_Receive(DW1000_SPI_HANDLE, readBuffer, readlength, SPI_TIMEOUT) != HAL_OK) {
-        // 如果接收失败，立即结束事务并返回错误
-        HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
-        return SPI_ERROR;
-    }
-
-    // 4. 结束SPI事务：将CS引脚拉高
+    // 5. 结束SPI事务：将CS引脚拉高
     HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
 
     decamutexoff(stat);
 
-    return 0;
+    // 6. 从完整的接收缓冲区中，只复制出我们需要的数据体部分
+    //    因为在发送命令头的 headerLength 期间，接收到的数据是无用的
+    memcpy(readBuffer, rx_buffer + headerLength, readlength);
+
+    return 0; // 返回成功
 } // end readfromspi()
+
+//***************************************************************************************************** */
+//***************************************************************************************************** */
+//***************************************************************************************************** */
+//***************************************************************************************************** */
+//***************************************************************************************************** */
+// 中断安全版
+int readfromspifromisr(uint16 headerLength, const uint8 *headerBuffer,
+                       uint32 readlength, uint8 *readBuffer)
+{
+
+    // 1. 准备临时的发送和接收缓冲区，大小为“命令头 + 数据体”的总长度
+    uint8_t tx_buffer[headerLength + readlength];
+    uint8_t rx_buffer[headerLength + readlength];
+
+    // 2. 构建完整的发送缓冲区
+    //    首先复制命令头
+    memcpy(tx_buffer, headerBuffer, headerLength);
+    //    然后在后面填充用于产生时钟的虚拟字节 (通常为0)
+    memset(tx_buffer + headerLength, 0x00, readlength);
+
+    UBaseType_t uxSavedInterruptStatus;
+
+    uxSavedInterruptStatus = taskENTER_CRITICAL_FROM_ISR();
+
+    // 3. 开始SPI事务：将CS引脚拉低
+    HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_RESET);
+
+    // 4. 只调用一次 HAL_SPI_TransmitReceive() 来完成整个“发送命令+接收数据”的过程
+    //    这保证了整个事务是连续且原子的
+    if (HAL_SPI_TransmitReceive(DW1000_SPI_HANDLE, tx_buffer, rx_buffer, headerLength + readlength, SPI_TIMEOUT) != HAL_OK) {
+        // 如果失败，立即结束事务并返回错误
+        HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
+        taskEXIT_CRITICAL_FROM_ISR(uxSavedInterruptStatus);
+        return SPI_ERROR;
+    }
+
+    // 5. 结束SPI事务：将CS引脚拉高
+    HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
+
+    taskEXIT_CRITICAL_FROM_ISR(uxSavedInterruptStatus);
+
+    // 6. 从完整的接收缓冲区中，只复制出我们需要的数据体部分
+    //    因为在发送命令头的 headerLength 期间，接收到的数据是无用的
+    memcpy(readBuffer, rx_buffer + headerLength, readlength);
+
+    return 0; // 返回成功
+} // end readfromspifromisr()
+
+int writetospifromisr(uint16 headerLength, const uint8 *headerBuffer,
+                      uint32 bodylength, const uint8 *bodyBuffer)
+{
+
+    // 1. 创建一个足够大的临时缓冲区来合并数据
+    //    最好使用动态计算或一个足够大的固定值
+    uint8_t spi_buffer[headerLength + bodylength];
+
+    // 2. 将 header 和 body 复制到临时缓冲区中
+    memcpy(spi_buffer, headerBuffer, headerLength);
+    memcpy(spi_buffer + headerLength, bodyBuffer, bodylength);
+
+    UBaseType_t uxSavedInterruptStatus;
+
+    uxSavedInterruptStatus = taskENTER_CRITICAL_FROM_ISR();
+
+    // 3. 开始SPI事务：将CS引脚拉低
+    HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_RESET);
+
+    // 4. 只调用一次 HAL_SPI_Transmit，发送合并后的完整数据
+    if (HAL_SPI_Transmit(DW1000_SPI_HANDLE, spi_buffer, headerLength + bodylength, SPI_TIMEOUT) != HAL_OK) {
+        // 如果发送失败，立即结束事务并返回错误
+        HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
+        taskEXIT_CRITICAL_FROM_ISR(uxSavedInterruptStatus);
+        return SPI_ERROR;
+    }
+
+    // 5. 结束SPI事务：将CS引脚拉高
+    HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_SET);
+
+    taskEXIT_CRITICAL_FROM_ISR(uxSavedInterruptStatus);
+
+    return 0; // 返回成功
+} // end writetospifromisr()

@@ -1629,6 +1629,18 @@ decaIrqStatus_t decamutexon(void);
  */
 void decamutexoff(decaIrqStatus_t s);
 
+// 中断安全版本
+// 32位数据的读取
+int dwt_write32bitoffsetregFromISR(int regFileID, int regOffset, uint32 regval);
+uint32 dwt_read32bitoffsetregFromISR(int regFileID, int regOffset);
+// 长度可调整的读取
+int dwt_readfromdeviceFromISR(uint16 recordNumber, uint16 index, uint32 length,
+                              uint8 *buffer);
+int dwt_writetodeviceFromISR(uint16 recordNumber, uint16 index, uint32 length,
+                             const uint8 *buffer);
+
+// 时间戳的获取
+
 #ifdef __cplusplus
 }
 #endif

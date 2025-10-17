@@ -6,8 +6,11 @@
     ],
     "settings": {
         "files.associations": {
-            "dw1000samplingtask.h": "c"
-        }
+            "compare": "c",
+            "cstdint": "c",
+            "iterator": "c"
+        },
+        "cortex-debug.variableUseNaturalFormat": false
     },
     "extensions": {}
 }

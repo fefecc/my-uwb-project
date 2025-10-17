@@ -21,9 +21,10 @@
 
 #include "common_header.h"
 
-extern uint64 get_tx_timestamp_u64(void);
-extern uint64 get_rx_timestamp_u64(void);
-extern void final_msg_get_ts(const uint8 *ts_field, uint32 *ts);
-extern void final_msg_set_ts(uint8 *ts_field, uint64 ts);
+uint64 get_tx_timestamp_u64(void);
+uint64 get_rx_timestamp_u64(void);
+void final_msg_set_ts(uint8 *ts_field, uint64 ts);
+void resp_msg_get_ts(uint8 *ts_field, uint64 ts);
+void final_msg_get_ts(const uint8 *ts_field, uint64 *ts);
 
 #endif

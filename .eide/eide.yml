@@ -5,11 +5,11 @@ deviceName: null
 packDir: null
 srcDirs:
   - APP
+  - Thrid
   - Core
-  - Drivers
   - FATFS
   - Middlewares
-  - Thrid
+  - Drivers
 virtualFolder:
   name: <virtual_root>
   files: []

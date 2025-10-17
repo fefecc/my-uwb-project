@@ -3629,3 +3629,150 @@ uint8 dwt_readwakeupvbat(void)
 
    ===============================================================================================
 */
+
+// my func  这个函数只在中断中使用，不要修改
+extern int readfromspifromisr(uint16 headerLength, const uint8 *headerBuffer,
+                              uint32 readlength, uint8 *readBuffer);
+extern int writetospifromisr(uint16 headerLength, const uint8 *headerBuffer,
+                             uint32 bodylength, const uint8 *bodyBuffer);
+
+// 中断安全读
+int dwt_readfromdeviceFromISR(uint16 recordNumber, uint16 index, uint32 length,
+                              uint8 *buffer)
+{
+    uint8 header[3]; // Buffer to compose header in
+    int cnt = 0;     // Counter for length of header
+#ifdef DWT_API_ERROR_CHECK
+    if (recordNumber > 0x3F) {
+        return DWT_ERROR; // Record number is limited to 6-bits.
+    }
+#endif
+
+    // Write message header selecting READ operation and addresses as appropriate
+    // (this is one to three bytes long)
+    if (index == 0) // For index of 0, no sub-index is required
+    {
+        header[cnt++] =
+            (uint8)recordNumber; // Bit-7 zero is READ operation, bit-6 zero=NO
+                                 // sub-addressing, bits 5-0 is reg file id
+    } else {
+#ifdef DWT_API_ERROR_CHECK
+        if (index > 0x7FFF) {
+            return DWT_ERROR; // Index is limited to 15-bits.
+        }
+        if ((index + length) > 0x7FFF) {
+            return DWT_ERROR; // Sub-addressable area is limited to 15-bits.
+        }
+#endif
+        header[cnt++] =
+            (uint8)(0x40 | recordNumber); // Bit-7 zero is READ operation, bit-6
+                                          // one=sub-address follows, bits 5-0 is
+                                          // reg file id
+
+        if (index <= 127) // For non-zero index < 127, just a single sub-index byte
+                          // is required
+        {
+            header[cnt++] =
+                (uint8)index; // Bit-7 zero means no extension, bits 6-0 is index.
+        } else {
+            header[cnt++] =
+                0x80 | (uint8)(index); // Bit-7 one means extended index, bits 6-0 is
+                                       // low seven bits of index.
+            header[cnt++] =
+                (uint8)(index >> 7); // 8-bit value = high eight bits of index.
+        }
+    }
+
+    // Do the read from the SPI
+    return readfromspifromisr(cnt, header, length,
+                              buffer); // result is stored in the buffer
+
+} // end dwt_readfromdevice()
+
+// write
+int dwt_writetodeviceFromISR(uint16 recordNumber, uint16 index, uint32 length,
+                             const uint8 *buffer)
+{
+    uint8 header[3]; // Buffer to compose header in
+    int cnt = 0;     // Counter for length of header
+#ifdef DWT_API_ERROR_CHECK
+    if (recordNumber > 0x3F) {
+        return DWT_ERROR; // Record number is limited to 6-bits.
+    }
+#endif
+
+    // Write message header selecting WRITE operation and addresses as appropriate
+    // (this is one to three bytes long)
+    if (index == 0) // For index of 0, no sub-index is required
+    {
+        header[cnt++] =
+            0x80 | recordNumber; // Bit-7 is WRITE operation, bit-6 zero=NO
+                                 // sub-addressing, bits 5-0 is reg file id
+    } else {
+#ifdef DWT_API_ERROR_CHECK
+        if (index > 0x7FFF) {
+            return DWT_ERROR; // Index is limited to 15-bits.
+        }
+        if ((index + length) > 0x7FFF) {
+            return DWT_ERROR; // Sub-addressable area is limited to 15-bits.
+        }
+#endif
+        header[cnt++] =
+            0xC0 | recordNumber; // Bit-7 is WRITE operation, bit-6 one=sub-address
+                                 // follows, bits 5-0 is reg file id
+
+        if (index <= 127) // For non-zero index < 127, just a single sub-index byte
+                          // is required
+        {
+            header[cnt++] =
+                (uint8)index; // Bit-7 zero means no extension, bits 6-0 is index.
+        } else {
+            header[cnt++] =
+                0x80 | (uint8)(index); // Bit-7 one means extended index, bits 6-0 is
+                                       // low seven bits of index.
+            header[cnt++] =
+                (uint8)(index >> 7); // 8-bit value = high eight bits of index.
+        }
+    }
+
+    // Write it to the SPI
+    return writetospifromisr(cnt, header, length, buffer);
+
+} // end dwt_writetodevice()
+
+// read
+uint32 dwt_read32bitoffsetregFromISR(int regFileID, int regOffset)
+{
+    uint32 regval = DWT_ERROR;
+    int j;
+    uint8 buffer[4];
+
+    int result = dwt_readfromdeviceFromISR(
+        regFileID, regOffset, 4,
+        buffer); // Read 4 bytes (32-bits) register into buffer
+
+    if (result == DWT_SUCCESS) {
+        for (j = 3; j >= 0; j--) {
+            regval = (regval << 8) + buffer[j];
+        }
+    }
+    return regval;
+
+} // end dwt_read32bitoffsetreg()
+
+int dwt_write32bitoffsetregFromISR(int regFileID, int regOffset, uint32 regval)
+{
+    int j;
+    int reg;
+    uint8 buffer[4];
+
+    for (j = 0; j < 4; j++) {
+        buffer[j] = regval & 0xff;
+        regval >>= 8;
+    }
+
+    reg = dwt_writetodeviceFromISR(regFileID, regOffset, 4, buffer);
+
+    return reg;
+
+} // end dwt_write32bitoffsetreg()

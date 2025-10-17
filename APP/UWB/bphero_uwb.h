@@ -4,9 +4,13 @@
 #include "frame_header.h"
 #include "common_header.h"
 
-#ifndef SHORT_ADDR
-#define SHORT_ADDR 0x0032
-#endif
+#define ADDR1
+// #define ADDR2
+
+#define SHORT_ADDR  0x0032
+#define SHORT_ADDR1 0x0032 // 表示一台地址 ，1 ，2分别进行通信，完成测距
+#define SHORT_ADDR2 0x0033
+
 extern int psduLength;
 extern srd_msg_dsss msg_f_send; // ranging message frame with 16-bit addresses
 
