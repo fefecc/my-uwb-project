@@ -133,6 +133,7 @@ uint64_t transmitDelayTime(uint64_t last_tx_timestamp, uint16_t DELAY_MS)
 {
     uint64_t future_tx_timestamp_64;
     future_tx_timestamp_64 = last_tx_timestamp + (uint64_t)(DELAY_MS * MS_TO_DWT_TIME);
+    future_tx_timestamp_64 = future_tx_timestamp_64 & 0xfffffffe00;
 
     return future_tx_timestamp_64;
 }

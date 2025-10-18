@@ -8,7 +8,8 @@
         "files.associations": {
             "compare": "c",
             "cstdint": "c",
-            "iterator": "c"
+            "iterator": "c",
+            "dw1000samplingtask.h": "c"
         },
         "cortex-debug.variableUseNaturalFormat": false
     },

@@ -5,7 +5,6 @@
 #include "trilateration.h"
 #include "deca_regs.h"
 #include "mydw1000timestamp.h"
-#include "common_header.h"
 #include "EXITcallback.h"
 #include "cmsis_os.h"
 #include "dw1000frame.h"
@@ -24,12 +23,6 @@
 // 宏定义：假设一次完整的测距流程，最多需要记录4对收发时间戳
 #define MAX_TIMESTAMPS_PER_NODE 4
 
-// typedef enum {
-//     UWB_STATE_IDLE,          // 空闲，等待发送周期
-//     UWB_STATE_AWAIT_TX_DONE, // 等待发送完成的中断
-//     UWB_STATE_AWAIT_RX_DONE  // 等待接收相关的中断
-// } UWB_State_t;
-
 // 这个用来判断帧的类型
 typedef enum {
     Frame_Type_NULL = 0, // 空初始化
@@ -40,25 +33,6 @@ typedef enum {
 
 TaskHandle_t dw1000samplingTaskNotifyHandle                 = NULL; // 创建dw1000采样线程句柄
 static volatile isr_timestamp_packet_t isr_timestamp_packet = {0};  // 用来记录时间戳的临时变量
-
-// static srd_msg_dsss *msg_f_recv; // 给出一个解析的数据帧
-
-// 读取中断中时间
-
-/* Frames used in the ranging process. */
-// 0x61 0x88表示系统框架  0是计数值，表示是否漏帧    0xf0f0表示系统的PanID ，W,A,V,E分别表示的是系统的ID值
-// tx_poll_msg 0x21表示数据，  0，0 是校验码
-// static uint8 tx_poll_msg[] = {0x41, 0x88, 0, 0xF0, 0xF0, 'W',
-//                               'A', 'V', 'E', 0, 0};
-// #define respt2 9
-// static uint8 rx_resp_msg[] = {0x41, 0x88, 0, 0xF0, 0xF0, 'V', 'E', 'W',
-//                               'A', 0, 0, 0, 0, 0, 0, 0};
-// #define finalt1 9
-// #define finalt2 14
-// #define finalt4 19
-// static uint8 tx_final_msg[] = {0x41, 0x88, 0, 0xF0, 0xF0, 'W', 'A', 'V',
-//                                'E', 0, 0, 0, 0, 0, 0,
-//                                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 // TAG_STATE
 typedef enum {
@@ -138,17 +112,6 @@ void dw1000TagMain(void)
                 dwt_writetxdata(frame_size, dw1000tx_buffer, 0); /* Zero offset in TX buffer. */
                 dwt_writetxfctrl(frame_size, 0);
                 dwt_starttx(DWT_START_TX_IMMEDIATE);
-
-                // tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
-                // dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg,
-                //                 0); /* Zero offset in TX buffer. */
-                // dwt_writetxfctrl(sizeof(tx_poll_msg),
-                //                  0); /* Zero offset in TX buffer, ranging. */
-
-                // /* Start transmission, indicating that a response is expected so
-                //  * that reception is enabled automatically after the frame is sent
-                //  * and the delay set by dwt_setrxaftertxdelay() has elapsed. */
-                // dwt_starttx(DWT_START_TX_IMMEDIATE);
 
                 g_current_tag_state = TAG_STATE_AWAIT_POLL_TX_CONFIRM;
                 break;
@@ -235,6 +198,7 @@ void dw1000TagMain(void)
                             // 发送数据，延时发送可以将数据直接写入参数中
 
                         } else {
+                            g_current_tag_state = TAG_STATE_IDLE; // 如果不是直接返回idle
                         }
                         // 6. 切换到等待 Final 发送完成的状态
                         g_current_tag_state = TAG_STATE_AWAIT_FINAL_TX_CONFIRM;
@@ -260,7 +224,8 @@ void dw1000TagMain(void)
                         local_device.seqNum++; // 递增序列号，为下一次做准备
                     }
                 } else {
-                    printf("ERROR: 等待 Final 发送完成超时！\n");
+                    printf("ERROR: wait Final timeout\n");
+                    g_current_tag_state = TAG_STATE_IDLE; // 返回idle
                 }
                 // 无论成功与否，都回到 IDLE 状态，开始新的周期
                 g_current_tag_state = TAG_STATE_IDLE;
@@ -269,12 +234,11 @@ void dw1000TagMain(void)
         }
     }
 }
-
+static Anchor_State_t g_current_anchor_state = ANCHOR_STATE_AWAIT_POLL_RX;
+static uint32_t notified_value               = 0;
 void dw1000AnchorMain(void)
 {
-    static Anchor_State_t g_current_anchor_state = ANCHOR_STATE_AWAIT_POLL_RX;
-    static uint32_t notified_value               = 0;
-    dwt_rxenable(0);
+    dwt_rxenable(0); // 开启接收
     while (1) {
         switch (g_current_anchor_state) {
             // --- 状态 1: 等待 Poll 消息 ---
@@ -324,17 +288,19 @@ void dw1000AnchorMain(void)
                             // dwt_writetxdata(sizeof(rx_resp_msg), rx_resp_msg, 0);
                             // dwt_writetxfctrl(sizeof(rx_resp_msg) , 0);
 
-                            dwt_starttx(DWT_START_TX_DELAYED); // 这里使用的是立即发送方式，需要改成延时发送
+                            dwt_starttx(DWT_START_TX_DELAYED); // 延时发送方式
 
                             // 切换到下一个状态
                             g_current_anchor_state = ANCHOR_STATE_AWAIT_RESPONSE_TX_CONFIRM;
                         } else {
                             // 如果不是 Poll 消息，忽略并重新开启接收
+                            g_current_anchor_state = ANCHOR_STATE_AWAIT_POLL_RX;
                             dwt_rxenable(0);
                         }
                     } else {
                         // 收到其他非 RX_DONE 事件，重新开启接收
-                        dwt_rxenable(0);
+                        g_current_anchor_state = ANCHOR_STATE_AWAIT_POLL_RX;
+                        dwt_rxenable(0); // 重新开启中断接收
                     }
                 }
                 break;
@@ -400,13 +366,19 @@ void dw1000AnchorMain(void)
                                                                               AnchorNode_u64->poll_rx_ts,
                                                                               AnchorNode_u64->resp_tx_ts,
                                                                               AnchorNode_u64->final_rx_ts);
+                            printf("distance : %f\r\n", twr_distance);
 
                         } else {
+                            g_current_anchor_state = ANCHOR_STATE_AWAIT_POLL_RX;
                         }
 
                     } else if (notified_value & (UWB_EVENT_RX_TIMEOUT | UWB_EVENT_RX_ERROR)) {
-                        printf("error\n");
+                        printf("error:RX timeout or rx error \n");
+                        g_current_anchor_state = ANCHOR_STATE_AWAIT_POLL_RX;
                     }
+                } else {
+                    printf("error:RX timeout\n");
+                    g_current_anchor_state = ANCHOR_STATE_AWAIT_POLL_RX;
                 }
                 // 无论成功与否，一次测距流程结束，回到最初的监听 Poll 状态
                 g_current_anchor_state = ANCHOR_STATE_AWAIT_POLL_RX;
