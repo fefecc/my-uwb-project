@@ -165,7 +165,7 @@ void MX_FREERTOS_Init(void)
     defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
     /* creation of IMU */
-    // IMUHandle = osThreadNew(IMUTask, NULL, &IMU_attributes);
+    IMUHandle = osThreadNew(IMUTask, NULL, &IMU_attributes);
 
     /* creation of SDMMC */
     // SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);

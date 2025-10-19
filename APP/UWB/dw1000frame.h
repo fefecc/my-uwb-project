@@ -43,6 +43,7 @@ typedef struct {
     uint8_t dest_addr[2];   // 目标地址 (Anchor 的短地址)
     uint8_t source_addr[2]; // 源地址 (Tag 自身的短地址)
     uint8_t function_code;  // 功能码, 应为 FUNC_CODE_POLL
+    uint8_t FCS[2];
 } PACKED twr_poll_msg_t;
 
 /**
@@ -60,7 +61,7 @@ typedef struct {
     uint8_t function_code;  // 功能码, 应为 FUNC_CODE_RESP
     uint8_t poll_rx_ts[5];  // Anchor 接收到 Poll 帧的 40 位时间戳
     uint8_t resp_tx_ts[5];  // Tag 接收 Response 帧的 40 位时间戳
-
+    uint8_t FCS[2];
 } PACKED twr_resp_msg_t;
 
 /**
@@ -80,6 +81,7 @@ typedef struct {
     uint8_t resp_tx_ts[5];  // resp发送时间戳
     uint8_t resp_rx_ts[5];  // resp接收时间戳
     uint8_t final_tx_ts[5]; // final发送时间戳
+    uint8_t FCS[2];
 } PACKED twr_final_msg_t;
 
 // 恢复默认的内存对齐方式
