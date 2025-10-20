@@ -30,6 +30,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "timestamptask.h"
+#include "stdio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -204,6 +205,53 @@ void PeriphCommonClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+// *** 重要: 修改这里的 huartx 以匹配您项目中使用的 UART 句柄 ***
+// 例如，如果您使用 UART1，句柄通常是 huart1
+extern UART_HandleTypeDef huart1;
+#define PRINTF_UART_HANDLE &huart1
+// *** ---------------------------------------------------- ***
+
+// 如果使用的是 ARM Compiler (Keil MDK)，通常需要重定义 fputc
+#if defined(__CC_ARM) || defined(__ARMCC_VERSION)
+int fputc(int ch, FILE *f)
+{
+    // 发送单个字符，使用阻塞模式，设置一个合理的超时时间
+    if (HAL_UART_Transmit(PRINTF_UART_HANDLE, (uint8_t *)&ch, 1, HAL_MAX_DELAY) == HAL_OK) {
+        return ch;
+    } else {
+        return EOF; // 返回文件结束符表示错误
+    }
+}
+
+// 可选：实现 ferror 以避免库警告
+int ferror(FILE *f)
+{
+    // 简单实现，可以根据需要扩展错误处理
+    return EOF;
+}
+
+#elif defined(__GNUC__) // 如果使用的是 GCC (STM32CubeIDE, Makefiles with ARM GCC)
+// 重定义 _write 函数 (用于 GCC/Newlib)
+int _write(int file, char *ptr, int len)
+{
+    // file == 1 表示标准输出 (stdout)
+    // file == 2 表示标准错误 (stderr)
+    // 在嵌入式系统中，通常将 stdout 和 stderr 都重定向到同一个 UART
+    if (file == 1 || file == 2) {
+        HAL_StatusTypeDef status = HAL_UART_Transmit(PRINTF_UART_HANDLE, (uint8_t *)ptr, len, HAL_MAX_DELAY);
+
+        if (status == HAL_OK) {
+            return len; // 返回成功写入的字节数
+        } else {
+
+            return -1; // 返回 -1 表示错误
+        }
+    }
+    // 对于其他文件描述符，返回错误
+
+    return -1;
+}
+#endif
 /* USER CODE END 4 */
 
 /**

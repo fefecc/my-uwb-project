@@ -42,7 +42,9 @@ static dwt_config_t config =
         (1025 + 64 - 32) /* SFD timeout (preamble length + 1 + SFD length - PAC*/
 };
 extern dw1000_local_device_t local_device;
+
 extern void apply_dw1000_optimizations(const dwt_config_t *config);
+
 void BPhero_UWB_Init(void) // dwm1000 init related
 {
     /* Reset and initialise DW1000.
@@ -61,6 +63,7 @@ void BPhero_UWB_Init(void) // dwm1000 init related
     spi_set_rate_high();
 
     dwt_configure(&config);
+
     apply_dw1000_optimizations(&config);
 
     dwt_setrxantennadelay(RX_ANT_DLY);

@@ -10,6 +10,7 @@
 #include "deca_device_api.h"
 #include "deca_spi.h"
 #include "deca_regs.h"
+#include "stdio.h"
 
 extern void uwb_isr_handler(void);
 
@@ -26,6 +27,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     }
 
     else if (GPIO_Pin == GPIO_PIN_2) {
+        printf("key\r\n");
 
     }
 

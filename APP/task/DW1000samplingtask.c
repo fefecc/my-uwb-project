@@ -10,18 +10,8 @@
 #include "dw1000frame.h"
 #include "dw1000framedeal.h"
 #include "string.h"
-
-#define FrameLength       5
-#define destaddrlength    2
-#define sourceaddrlength  2
-
-#define HeadLength        FrameLength + destaddrlength + sourceaddrlength
-
-#define CRCLength         2
-
-#define PollMessageLength 1
-// 宏定义：假设一次完整的测距流程，最多需要记录4对收发时间戳
-#define MAX_TIMESTAMPS_PER_NODE 4
+#include "stdint.h"
+#include "inttypes.h"
 
 // 这个用来判断帧的类型
 typedef enum {
@@ -246,8 +236,7 @@ static Anchor_State_t g_current_anchor_state = ANCHOR_STATE_AWAIT_POLL_RX;
 // static uint32_t notified_value               = 0;
 void dw1000AnchorMain(void)
 {
-
-    dwt_rxenable(0); // 开启接收
+    reset_anchor_state_machine(&g_current_anchor_state); // 开启接收
     while (1) {
         switch (g_current_anchor_state) {
             // --- 状态 1: 等待 Poll 消息 ---
@@ -255,39 +244,50 @@ void dw1000AnchorMain(void)
                 // 无限期等待 ISR 的通知
                 if (xTaskNotifyWait(0x00,       /* 进入时不清除所有通知位 */
                                     UINT32_MAX, /* 退出时清除所有通知位 */
-                                    &notified_value, portMAX_DELAY) == pdTRUE) {
+                                    &notified_value, pdMS_TO_TICKS(3000)) == pdTRUE) {
                     if (notified_value & UWB_EVENT_RX_DONE) {
+                        uint16_t frame_len =
+                            dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
 
-                        uint16_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
-
-                        //  uint16_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK; // 发送过来的数据长度
+                        //  uint16_t frame_len = dwt_read32bitreg(RX_FINFO_ID) &
+                        //  RX_FINFO_RXFLEN_MASK; // 发送过来的数据长度
 
                         dwt_readrxdata(dw1000rx_buffer, frame_len, 0); // 读取的数据
 
                         //  dwt_readrxdata(rx_buffer, frame_len, 0);
                         twr_poll_msg_t received_poll_msg;
 
-                        if (!parse_poll_frame(dw1000rx_buffer, frame_len, &received_poll_msg)) {
-
+                        if (!parse_poll_frame(dw1000rx_buffer, frame_len,
+                                              &received_poll_msg)) {
                             clear_node_profile(&AnchorNode[0]);
 
-                            mymemcopytimestamp(AnchorNode[0].poll_rx_ts, isr_timestamp_packet.rxtimestamp); // 这个接收的数据是poll帧
+                            mymemcopytimestamp(
+                                AnchorNode[0].poll_rx_ts,
+                                isr_timestamp_packet
+                                    .rxtimestamp); // 这个接收的数据是poll帧
 
                             uint64_t transmitDelayTimetick; // 计算延时之后的基础时间
 
-                            transmitDelayTimetick = transmitDelayTime(u8_5byte_TO_u64(AnchorNode[0].poll_rx_ts), 5); // 5ms
+                            transmitDelayTimetick = transmitDelayTime(
+                                u8_5byte_TO_u64(AnchorNode[0].poll_rx_ts), 5); // 5ms
 
-                            u64_TO_u8_5byte(transmitDelayTimetick, AnchorNode[0].resp_tx_ts);
+                            u64_TO_u8_5byte(transmitDelayTimetick,
+                                            AnchorNode[0].resp_tx_ts);
 
-                            dwt_setdelayedtrxtime((uint32_t)(transmitDelayTimetick >> 8)); // 低位直接忽略
+                            dwt_setdelayedtrxtime((uint32_t)(transmitDelayTimetick >>
+                                                             8)); // 低位直接忽略
 
-                            uint16_t dest_addrtemp = received_poll_msg.source_addr[0] | ((uint16_t)received_poll_msg.source_addr[1] << 8);
+                            uint16_t dest_addrtemp =
+                                received_poll_msg.source_addr[0] |
+                                ((uint16_t)received_poll_msg.source_addr[1] << 8);
 
                             static int16_t frame_size = 0; // 计算
 
-                            frame_size = create_resp_frame(dw1000tx_buffer, sizeof(dw1000tx_buffer), received_poll_msg.sequence_num,
-                                                           local_device.pan_id, dest_addrtemp, local_device.short_addr,
-                                                           AnchorNode[0].poll_rx_ts, AnchorNode[0].resp_tx_ts);
+                            frame_size = create_resp_frame(
+                                dw1000tx_buffer, sizeof(dw1000tx_buffer),
+                                received_poll_msg.sequence_num, local_device.pan_id,
+                                dest_addrtemp, local_device.short_addr,
+                                AnchorNode[0].poll_rx_ts, AnchorNode[0].resp_tx_ts);
 
                             dwt_writetxdata(frame_size, dw1000tx_buffer, 0);
                             dwt_writetxfctrl(frame_size, 0);
@@ -298,7 +298,8 @@ void dw1000AnchorMain(void)
                             dwt_starttx(DWT_START_TX_DELAYED); // 延时发送方式
 
                             // 切换到下一个状态
-                            g_current_anchor_state = ANCHOR_STATE_AWAIT_RESPONSE_TX_CONFIRM;
+                            g_current_anchor_state =
+                                ANCHOR_STATE_AWAIT_RESPONSE_TX_CONFIRM;
                         } else {
                             // 如果不是 Poll 消息，忽略并重新开启接收
                             printf("ERROR: POLL frame error\n"); // 帧解析错误
@@ -306,11 +307,14 @@ void dw1000AnchorMain(void)
                         }
                     } else {
                         // 收到其他非 RX_DONE 事件，重新开启接收
-                        printf("ERROR: POLL frame interrupt error\n"); // 中断类型错误
+                        printf(
+                            "ERROR: POLL frame interrupt error notified_value:%lu\n",
+                            notified_value); // 中断类型错误
                         reset_anchor_state_machine(&g_current_anchor_state);
                     }
                 } else {
                     // 这个等待函数是永久等待，不会到这里的
+                    reset_anchor_state_machine(&g_current_anchor_state);
                 }
             } break;
 
@@ -345,39 +349,52 @@ void dw1000AnchorMain(void)
                                     UINT32_MAX, /* 退出时清除所有通知位 */
                                     &notified_value, pdMS_TO_TICKS(100)) == pdTRUE) {
                     if (notified_value & UWB_EVENT_RX_DONE) {
-
-                        uint16_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
+                        uint16_t frame_len =
+                            dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
 
                         dwt_readrxdata(dw1000rx_buffer, frame_len, 0);
 
                         twr_final_msg_t received_final_msg;
 
-                        if (!parse_final_frame(dw1000rx_buffer, frame_len, &received_final_msg)) {
+                        if (!parse_final_frame(dw1000rx_buffer, frame_len,
+                                               &received_final_msg)) {
+                            mymemcopytimestamp(
+                                AnchorNode[0].final_rx_ts,
+                                isr_timestamp_packet.rxtimestamp); // 这个接收的数据是poll帧
 
-                            mymemcopytimestamp(AnchorNode[0].final_rx_ts, isr_timestamp_packet.rxtimestamp); // 这个接收的数据是poll帧
+                            mymemcopytimestamp(AnchorNode[0].poll_tx_ts,
+                                               received_final_msg.poll_tx_ts);
+                            mymemcopytimestamp(AnchorNode[0].poll_rx_ts,
+                                               received_final_msg.poll_rx_ts);
+                            mymemcopytimestamp(AnchorNode[0].resp_tx_ts,
+                                               received_final_msg.resp_tx_ts);
+                            mymemcopytimestamp(AnchorNode[0].resp_rx_ts,
+                                               received_final_msg.resp_rx_ts);
+                            mymemcopytimestamp(AnchorNode[0].final_tx_ts,
+                                               received_final_msg.final_tx_ts);
 
-                            mymemcopytimestamp(AnchorNode[0].poll_tx_ts, received_final_msg.poll_tx_ts);
-                            mymemcopytimestamp(AnchorNode[0].poll_rx_ts, received_final_msg.poll_rx_ts);
-                            mymemcopytimestamp(AnchorNode[0].resp_tx_ts, received_final_msg.resp_tx_ts);
-                            mymemcopytimestamp(AnchorNode[0].resp_rx_ts, received_final_msg.resp_rx_ts);
-                            mymemcopytimestamp(AnchorNode[0].final_tx_ts, received_final_msg.final_tx_ts);
+                            AnchorNode_u64->short_addr = local_device.short_addr;
+                            AnchorNode_u64->poll_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].poll_tx_ts);
+                            AnchorNode_u64->poll_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].poll_rx_ts);
+                            AnchorNode_u64->resp_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].resp_tx_ts);
+                            AnchorNode_u64->resp_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].resp_rx_ts);
+                            AnchorNode_u64->final_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].final_tx_ts);
+                            AnchorNode_u64->final_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].final_rx_ts);
 
-                            AnchorNode_u64->short_addr  = local_device.short_addr;
-                            AnchorNode_u64->poll_tx_ts  = u8_5byte_TO_u64(AnchorNode[0].poll_tx_ts);
-                            AnchorNode_u64->poll_rx_ts  = u8_5byte_TO_u64(AnchorNode[0].poll_rx_ts);
-                            AnchorNode_u64->resp_tx_ts  = u8_5byte_TO_u64(AnchorNode[0].resp_tx_ts);
-                            AnchorNode_u64->resp_rx_ts  = u8_5byte_TO_u64(AnchorNode[0].resp_rx_ts);
-                            AnchorNode_u64->final_tx_ts = u8_5byte_TO_u64(AnchorNode[0].final_tx_ts);
-                            AnchorNode_u64->final_rx_ts = u8_5byte_TO_u64(AnchorNode[0].final_rx_ts);
+                            twr_distance = calculate_distance_from_timestamps(
+                                AnchorNode_u64->poll_tx_ts, AnchorNode_u64->resp_rx_ts,
+                                AnchorNode_u64->final_tx_ts, AnchorNode_u64->poll_rx_ts,
+                                AnchorNode_u64->resp_tx_ts, AnchorNode_u64->final_rx_ts);
 
-                            twr_distance = calculate_distance_from_timestamps(AnchorNode_u64->poll_tx_ts,
-                                                                              AnchorNode_u64->resp_rx_ts,
-                                                                              AnchorNode_u64->final_tx_ts,
-                                                                              AnchorNode_u64->poll_rx_ts,
-                                                                              AnchorNode_u64->resp_tx_ts,
-                                                                              AnchorNode_u64->final_rx_ts);
                             printf("distance : %f\r\n", twr_distance);
-                            reset_anchor_state_machine(&g_current_anchor_state); // 成功解析返回等待模式
+                            reset_anchor_state_machine(
+                                &g_current_anchor_state); // 成功解析返回等待模式
 
                         } else {
                             printf("ERROR: FINAL frame error\n"); // 帧解析错误
@@ -385,7 +402,7 @@ void dw1000AnchorMain(void)
                         }
 
                     } else {
-                        printf("ERROR: FINAL frame interrupt error\n"); // 中断类型错误
+                        printf("ERROR: FINAL frame interrupt error:%lu\n", notified_value); // 中断类型错误
                         reset_anchor_state_machine(&g_current_anchor_state);
                     }
                 } else {
@@ -420,12 +437,15 @@ void uwb_isr_handler(void)
 
     status_reg = dwt_read32bitoffsetregFromISR(SYS_STATUS_ID, 0); // 读取状态
 
+    uint32_t taskEXIT_CRITICAL_temp;
     // 用来记录时间戳
+    taskEXIT_CRITICAL_temp = taskENTER_CRITICAL_FROM_ISR();
     static uint8_t temp_timestamp_buffer[5];
     my_get_rx_timestamp_u8_5byte(temp_timestamp_buffer);
     memcpy((void *)isr_timestamp_packet.rxtimestamp, temp_timestamp_buffer, 5);
     my_get_tx_timestamp_u8_5byte(temp_timestamp_buffer);
     memcpy((void *)isr_timestamp_packet.txtimestamp, temp_timestamp_buffer, 5);
+    taskEXIT_CRITICAL_FROM_ISR(taskEXIT_CRITICAL_temp);
 
     //  根据状态寄存器的值，判断发生了什么事件，并映射到您的 UWB_Event_t 枚举
     if (status_reg & SYS_STATUS_TXFRS) {
@@ -441,6 +461,14 @@ void uwb_isr_handler(void)
     if (status_reg & SYS_STATUS_RXRFTO) {
         // 接收帧等待超时 [cite: 1104]
         event_to_notify |= UWB_EVENT_RX_TIMEOUT;
+    }
+    if (status_reg & SYS_STATUS_RXSFDTO) {
+        // SFD超时
+        event_to_notify |= UWB_EVENT_SFD_DONE;
+    }
+    if (status_reg & SYS_STATUS_RXPTO) {
+        // PRE超时
+        event_to_notify |= UWB_EVENT_PRE_DONE;
     }
 
     if (status_reg & SYS_STATUS_AFFREJ) {
@@ -639,8 +667,9 @@ void reset_anchor_state_machine(Anchor_State_t *current_anchor_state)
                               | DWT_INT_RFCG // 接收成功 (CRC OK)
                               | DWT_INT_RFTO // 接收帧等待超时
                               | DWT_INT_RFCE // 接收 CRC 错误
-        // | DWT_INT_RXPTO  // 前导码超时 (可选)
-        // | DWT_INT_SFDT   // SFD 超时 (可选)
+
+                              | DWT_INT_RXPTO // 前导码超时 (可选)
+                              | DWT_INT_SFDT  // SFD 超时 (可选)
         // | DWT_INT_RPHE   // PHY 头错误 (可选)
         ;
 
@@ -651,15 +680,13 @@ void reset_anchor_state_machine(Anchor_State_t *current_anchor_state)
     uint32_t status_reg = dwt_read32bitreg(SYS_STATUS_ID);
     dwt_write32bitreg(SYS_STATUS_ID, status_reg); // 写 1 清除置位的标志
 
-    // uint32_t pmsc_ctrl0_value;
+    uint32_t pmsc_ctrl0_value;
 
-    // pmsc_ctrl0_value = dwt_read32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET);
+    pmsc_ctrl0_value = dwt_read32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET);
 
-    // dwt_write32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET, pmsc_ctrl0_value & ~RX_SOFTRESET_BIT_MASK);
-    // dwt_write32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET, pmsc_ctrl0_value & ~ALL_SOFTRESET_BITS_MASK);
-
-    // pmsc_ctrl0_value = dwt_read32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET);
-
+    dwt_write32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET, pmsc_ctrl0_value & ~RX_SOFTRESET_BIT_MASK);
+    osDelay(1);
+    dwt_write32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET, (pmsc_ctrl0_value & ~ALL_SOFTRESET_BITS_MASK) | ALL_SOFTRESET_BITS_MASK);
     // 4. 清除 RTOS 任务通知状态
     if (dw1000samplingTaskNotifyHandle != NULL) {
         xTaskNotifyStateClear(dw1000samplingTaskNotifyHandle);
@@ -675,8 +702,8 @@ void reset_anchor_state_machine(Anchor_State_t *current_anchor_state)
     //    但对于 Anchor 等待 Poll，通常不需要超时或设置很长的超时。
     //    dwt_setrxtimeout(0); // 禁用超时，或设置为合适的超时值
 
-    dwt_rxenable(0); // 立即启用接收
-
     // 7. 重新启用必要的 DW1000 中断
     dwt_setinterrupt(interrupt_mask, 1);
+    dwt_setrxtimeout(0);
+    dwt_rxenable(0); // 立即启用接收
 }
