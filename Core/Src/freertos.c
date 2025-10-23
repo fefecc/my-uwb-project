@@ -31,6 +31,7 @@
 #include "imusamplingtask.h"
 #include "queue.h"
 #include "stdio.h"
+#include "DW1000samplingtask.h"
 
 /* USER CODE END Includes */
 
@@ -155,8 +156,9 @@ void MX_FREERTOS_Init(void)
 
     xIMUDataQueue = xQueueCreate(128, sizeof(IMUOrigData_t)); // 128 帧
 
-    IMUDataToSDTaskQueue =
-        xQueueCreate(64, sizeof(MsgIMU_t)); // 64 帧 一帧 49字节
+    dw1000data_queue = xQueueCreate(64, sizeof(double)); // 发送距离数据
+
+    IMUDataToSDTaskQueue = xQueueCreate(64, sizeof(MsgIMU_t)); // 64 帧 一帧 49字节
 
     /* USER CODE END RTOS_QUEUES */
 
@@ -164,18 +166,18 @@ void MX_FREERTOS_Init(void)
     /* creation of defaultTask */
     defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-    /* creation of IMU */
-    // IMUHandle = osThreadNew(IMUTask, NULL, &IMU_attributes);
+    // /* creation of IMU */
+    IMUHandle = osThreadNew(IMUTask, NULL, &IMU_attributes);
 
     /* creation of SDMMC */
-    // SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
+    SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
 
     /* creation of GNSS */
     // GNSSHandle = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
 
     /* USER CODE BEGIN RTOS_THREADS */
     /* add threads, ... */
-    // IMUDealHandle            = osThreadNew(IMUDataDealTask, NULL, &IMuUDeal_attributes);
+    IMUDealHandle            = osThreadNew(IMUDataDealTask, NULL, &IMuUDeal_attributes);
     InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
     dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
     /* USER CODE END RTOS_THREADS */

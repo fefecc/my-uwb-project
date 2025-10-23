@@ -11,7 +11,11 @@
             "iterator": "c",
             "dw1000samplingtask.h": "c",
             "cdefs.h": "c",
-            "main.h": "c"
+            "main.h": "c",
+            "cmsis_os.h": "c",
+            "imusamplingtask.h": "c",
+            "task.h": "c",
+            "queue.h": "c"
         },
         "cortex-debug.variableUseNaturalFormat": false
     },

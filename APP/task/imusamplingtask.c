@@ -50,10 +50,10 @@ int16_t IMUSamplingTaskFunc(void *argument)
         imuData.sec   = timestampOrig.sec;
         imuData._50us = timestampOrig._50us;
 
-        BaseType_t Xsendresult = xQueueSend(xIMUDataQueue, &imuData, 0);
-        if (Xsendresult != pdPASS) {
-            printf("sampling queue full\r\n");
-        }
+        //  BaseType_t Xsendresult = xQueueSend(xIMUDataQueue, &imuData, 0);
+        // if (Xsendresult != pdPASS) {
+        //     printf("sampling queue full\r\n");
+        // }
         osDelay(1);
     }
 

@@ -4,57 +4,63 @@
 #include "imusamplingtask.h"
 #include "stdio.h"
 #include "task.h"
+#include "DW1000samplingtask.h"
 
-QueueHandle_t IMUDataToSDTaskQueue = NULL;  // 创建队列来完成数据的传输;
+QueueHandle_t IMUDataToSDTaskQueue = NULL; // 创建队列来完成数据的传输;
 
 static uint32_t CalculateCRC32(uint8_t *buf, uint8_t size);
 
-void imuDataDealTaskFunc(void) {
-  /* USER CODE BEGIN imudatadealtask */
-  IMUOrigData_t IMU_DatatoSD;
+void imuDataDealTaskFunc(void)
+{
+    /* USER CODE BEGIN imudatadealtask */
+    IMUOrigData_t IMU_DatatoSD = {0};
+    double dw1000DataToSD;
 
-  /* Infinite loop */
-  for (;;) {
-    static MsgIMU_t msg = {0};
-    xQueueReceive(xIMUDataQueue, &IMU_DatatoSD, portMAX_DELAY);
-    msg.hdr.sync1 = 0xAA;
-    msg.hdr.sync2 = 0x44;
-    msg.hdr.sync3 = 0x55;
-    msg.hdr.cpuIdle = 0;
-    msg.hdr.msgID = 1;
-    msg.hdr.msgLen = sizeof(MsgIMU_t);
-    msg.hdr.timeRef = 0;
+    /* Infinite loop */
+    for (;;) {
+        static MsgIMU_t msg = {0};
+        // xQueueReceive(xIMUDataQueue, &IMU_DatatoSD, portMAX_DELAY);
+        xQueueReceive(dw1000data_queue, &dw1000DataToSD, portMAX_DELAY); // 暂时不添加imu数据
+        msg.hdr.sync1   = 0xAA;
+        msg.hdr.sync2   = 0x44;
+        msg.hdr.sync3   = 0x55;
+        msg.hdr.cpuIdle = 0;
+        msg.hdr.msgID   = 1;
+        msg.hdr.msgLen  = sizeof(MsgIMU_t);
+        msg.hdr.timeRef = 0;
 
-    msg.hdr.timeStatus = 0;
-    msg.hdr.time = IMU_DatatoSD.sec;
-    msg.hdr.sec = IMU_DatatoSD._50us;
-    msg.hdr.version = 0;
-    msg.hdr.leapSec = 0;
-    msg.hdr.delayMs = 0;
+        msg.hdr.timeStatus = 0;
+        msg.hdr.time       = IMU_DatatoSD.sec;
+        msg.hdr.sec        = IMU_DatatoSD._50us;
+        msg.hdr.version    = 0;
+        msg.hdr.leapSec    = 0;
+        msg.hdr.delayMs    = 0;
 
-    msg.body.sensor = 0;
-    msg.body.sensitivity = (asm_config.g_fs << 8) | asm_config.xl_fs;
+        msg.body.sensor      = 0;
+        msg.body.sensitivity = (asm_config.g_fs << 8) | asm_config.xl_fs;
 
-    msg.body.gyro[0] = IMU_DatatoSD.gyro[0];
-    msg.body.gyro[1] = IMU_DatatoSD.gyro[1];
-    msg.body.gyro[2] = IMU_DatatoSD.gyro[2];
+        msg.body.gyro[0] = IMU_DatatoSD.gyro[0];
+        msg.body.gyro[1] = IMU_DatatoSD.gyro[1];
+        msg.body.gyro[2] = IMU_DatatoSD.gyro[2];
 
-    msg.body.accel[0] = IMU_DatatoSD.accel[0];
-    msg.body.accel[1] = IMU_DatatoSD.accel[1];
-    msg.body.accel[2] = IMU_DatatoSD.accel[2];
+        msg.body.accel[0] = IMU_DatatoSD.accel[0];
+        msg.body.accel[1] = IMU_DatatoSD.accel[1];
+        msg.body.accel[2] = IMU_DatatoSD.accel[2];
 
-    msg.body.crc =
-        CalculateCRC32((uint8_t *)&msg, sizeof(msg) - sizeof(msg.body.crc));
+        msg.dw1000Msg.dw1000dis = dw1000DataToSD; // 保存数据
 
-    BaseType_t Xsendresult = xQueueSend(IMUDataToSDTaskQueue, &msg, 0);
+        msg.body.crc =
+            CalculateCRC32((uint8_t *)&msg, sizeof(msg) - sizeof(msg.body.crc));
 
-    if (Xsendresult != pdPASS) {
-      printf("datadeal queue full\r\n");
+        BaseType_t Xsendresult = xQueueSend(IMUDataToSDTaskQueue, &msg, 0);
+
+        if (Xsendresult != pdPASS) {
+            printf("datadeal queue full\r\n");
+        }
+
+        osDelay(5);
     }
-
-    osDelay(5);
-  }
-  /* USER CODE END imudatadealtask */
+    /* USER CODE END imudatadealtask */
 }
 
 const uint32_t aulCrcTable[256] = {
@@ -111,10 +117,11 @@ const uint32_t aulCrcTable[256] = {
     0x5d681b02UL, 0x2a6f2b94UL, 0xb40bbe37UL, 0xc30c8ea1UL, 0x5a05df1bUL,
     0x2d02ef8dUL};
 
-static uint32_t CalculateCRC32(uint8_t *buf, uint8_t size) {
-  uint32_t crc = 0x00;
-  for (int i = 0; i < size; i++) {
-    crc = aulCrcTable[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
-  }
-  return crc;
+static uint32_t CalculateCRC32(uint8_t *buf, uint8_t size)
+{
+    uint32_t crc = 0x00;
+    for (int i = 0; i < size; i++) {
+        crc = aulCrcTable[(crc ^ buf[i]) & 0xFF] ^ (crc >> 8);
+    }
+    return crc;
 }

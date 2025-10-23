@@ -28,6 +28,8 @@ TaskHandle_t UM960samplingTaskNotifyHandle = NULL;
 // 2. 定义队列句柄
 QueueHandle_t gnss_data_queue = NULL;
 
+
+
 void UM960SamplingTaskFunc(void)
 {
     UM960samplingTaskNotifyHandle =

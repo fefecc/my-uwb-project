@@ -78,6 +78,8 @@ typedef struct {
 
 extern TaskHandle_t dw1000samplingTaskNotifyHandle;
 
+extern QueueHandle_t dw1000data_queue;
+
 void DW1000samplingtask(void *argument);
 int16_t clear_node_profile(uwb_node_profile_t *node_profile);
 double calculate_distance_from_timestamps(uint64_t tag_poll_tx_ts,
@@ -86,5 +88,6 @@ double calculate_distance_from_timestamps(uint64_t tag_poll_tx_ts,
                                           uint64_t anchor_poll_rx_ts,
                                           uint64_t anchor_resp_tx_ts,
                                           uint64_t anchor_final_rx_ts);
+void UWBMssageInit(void);
 
 #endif

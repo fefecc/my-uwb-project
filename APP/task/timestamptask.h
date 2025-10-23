@@ -4,8 +4,8 @@
 #include "main.h"
 
 typedef struct {
-  uint64_t sec;
-  float _50us;
+    uint64_t sec;
+    float _50us;
 } timestamp_def;
 
 timestamp_def GetCurrentTimestamp(void);

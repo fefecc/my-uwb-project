@@ -12,6 +12,7 @@
 #include "string.h"
 #include "stdint.h"
 #include "inttypes.h"
+#include "doubleTOchar.h"
 
 // 这个用来判断帧的类型
 typedef enum {
@@ -87,6 +88,9 @@ extern srd_msg_dsss msg_f_send;
 
 static Tag_State_t g_current_tag_state = TAG_STATE_IDLE;
 static uint32_t notified_value         = 0;
+
+QueueHandle_t dw1000data_queue = NULL;
+
 void dw1000TagMain(void)
 {
 
@@ -393,6 +397,13 @@ void dw1000AnchorMain(void)
                                 AnchorNode_u64->resp_tx_ts, AnchorNode_u64->final_rx_ts);
 
                             printf("distance : %f\r\n", twr_distance);
+
+                            BaseType_t Xsendresult = xQueueSend(dw1000data_queue, &twr_distance, 0);
+
+                            if (Xsendresult != pdPASS) {
+                                printf("dw1000 data  queue full\r\n");
+                            }
+
                             reset_anchor_state_machine(
                                 &g_current_anchor_state); // 成功解析返回等待模式
 
@@ -415,10 +426,17 @@ void dw1000AnchorMain(void)
     }
 }
 
+typedef struct {
+    uint8_t frameCtrl[2]; // frame control bytes 00-01
+    uint16_t pan_id;
+    uint16_t short_addr;
+} dw1000_local_flashData_t;
+
 void DW1000samplingtask(void *argument)
 {
     dw1000samplingTaskNotifyHandle =
         xTaskGetCurrentTaskHandle(); // 获取当前的线程句柄
+    UWBMssageInit();                 // 初始化message数据，这个数据是直接从flash中读取的数据，包含本地的数据
     // BPhero_UWB_Message_Init();       // 消息结构体初始化
     BPhero_UWB_Init(); // dwm1000 init related
 
@@ -706,4 +724,49 @@ void reset_anchor_state_machine(Anchor_State_t *current_anchor_state)
     dwt_setinterrupt(interrupt_mask, 1);
     dwt_setrxtimeout(0);
     dwt_rxenable(0); // 立即启用接收
+}
+
+// --- M24C64 参数 (根据您的硬件和手册确认) ---
+#define M24C64_I2C_ADDR       (0x50 << 1)           // 假设 E2=E1=E0=0, 地址为 0x50
+#define M24C64_PAGE_SIZE      32                    // 页大小 32 字节
+#define M24C64_WRITE_TIME_MS  5                     // 写周期时间 5 ms
+#define I2C_MEM_ADDR_SIZE     I2C_MEMADD_SIZE_16BIT // M24C64 使用 16 位地址
+#define I2C_TIMEOUT           100                   // HAL I2C 操作超时 (ms)
+
+#define CONFIG_EEPROM_ADDRESS 0x0000
+
+extern I2C_HandleTypeDef hi2c1;
+
+/**
+ * @brief 从 M24C64 读取数据 (阻塞方式)
+ * @param memAddr EEPROM 内部起始地址
+ * @param pData   指向存储读取数据的缓冲区的指针
+ * @param size    要读取的字节数
+ * @retval HAL Status
+ */
+HAL_StatusTypeDef M24C64_Read(uint16_t memAddr, uint8_t *pData, uint16_t size)
+{
+    HAL_StatusTypeDef status;
+    status = HAL_I2C_Mem_Read(&hi2c1, M24C64_I2C_ADDR, memAddr, I2C_MEM_ADDR_SIZE, pData, size, I2C_TIMEOUT);
+    if (status != HAL_OK) {
+        printf("Error: HAL_I2C_Mem_Read failed with status %d at addr 0x%04X\r\n", status, memAddr);
+    }
+    return status;
+}
+
+void UWBMssageInit(void)
+{
+    dw1000_local_flashData_t config_read_back;
+    HAL_StatusTypeDef read_status;
+
+    read_status = M24C64_Read(CONFIG_EEPROM_ADDRESS, (uint8_t *)&config_read_back, sizeof(dw1000_local_device_t));
+    if (read_status == HAL_OK) {
+        // 更新数据
+        local_device.frameCtrl[0] = config_read_back.frameCtrl[0];
+        local_device.frameCtrl[1] = config_read_back.frameCtrl[1];
+        local_device.pan_id       = config_read_back.pan_id;
+        local_device.short_addr   = config_read_back.short_addr;
+    } else {
+        printf("Read operation failed after write.\r\n");
+    }
 }
