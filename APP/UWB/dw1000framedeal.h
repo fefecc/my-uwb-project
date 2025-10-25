@@ -86,4 +86,14 @@ int16_t create_final_frame(uint8_t *buffer, size_t buffer_size, uint8_t seq_num,
 int16_t parse_final_frame(const uint8_t *buffer, uint16_t length,
                           twr_final_msg_t *parsed_msg);
 
+// 关于disdata最终发送到tag的数据帧处理函数
+int16_t create_disdata_frame(
+    uint8_t *buffer, size_t buffer_size, uint8_t seq_num, uint16_t pan_id,
+    uint16_t dest_addr, uint16_t source_addr, const uint8_t *poll_tx_ts,
+    const uint8_t *poll_rx_ts, const uint8_t *resp_tx_ts,
+    const uint8_t *resp_rx_ts, const uint8_t *final_tx_ts,
+    const uint8_t *final_rx_ts);
+int16_t parse_disdata_frame(const uint8_t *buffer, uint16_t length,
+                            twr_disdata_msg_t *parsed_msg);
+
 #endif

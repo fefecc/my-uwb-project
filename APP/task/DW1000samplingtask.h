@@ -16,6 +16,18 @@ typedef struct {
 
 } isr_timestamp_packet_t;
 
+// 来自中断的事件通知 (使用位掩码)
+typedef enum {
+    UWB_EVENT_NONE           = 0,
+    UWB_EVENT_TX_DONE        = (1 << 0), // 发送完成 0x01
+    UWB_EVENT_RX_DONE        = (1 << 1), // 接收成功 0x02
+    UWB_EVENT_RX_TIMEOUT     = (1 << 2), // 接收超时 0x04
+    UWB_EVENT_RX_ERROR       = (1 << 3), // 接收出错 0x08
+    UWB_EVENT_PRE_DONE       = (1 << 4), // 前导码超时 0x10
+    UWB_EVENT_SFD_DONE       = (1 << 5), // SFD超时  0x20
+    UWB_EVENT_FRAME_REJECTED = (1 << 6)  // 自动帧过滤拒绝事件 ,一个硬件错规则 0x40
+} UWB_Event_t;
+
 // 这些数据是时间戳的40位数据
 typedef struct {
 

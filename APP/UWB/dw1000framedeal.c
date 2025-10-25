@@ -239,3 +239,87 @@ int16_t parse_final_frame(const uint8_t *buffer, uint16_t length,
 
     return 0; // 解析成功，返回 0
 }
+
+/*************************************************************************************************/
+/* disdata帧生成函数实现                                                                          */
+/*************************************************************************************************/
+// 这个结构的数据直接从本地数据中读取出来就可以了
+int16_t create_disdata_frame(uint8_t *buffer, size_t buffer_size,
+                             uint8_t seq_num, uint16_t pan_id,
+                             uint16_t dest_addr, uint16_t source_addr,
+                             const uint8_t *poll_tx_ts, const uint8_t *poll_rx_ts,
+                             const uint8_t *resp_tx_ts, const uint8_t *resp_rx_ts,
+                             const uint8_t *final_tx_ts, const uint8_t *final_rx_ts)
+{
+    const size_t frame_size = sizeof(twr_disdata_msg_t);
+
+    // 1. 参数校验
+    if (buffer == NULL || buffer_size < frame_size || poll_tx_ts == NULL || resp_rx_ts == NULL) {
+        return -1; // 缓冲区太小或空指针，返回错误
+    }
+
+    // 2. 将缓冲区指针转换为结构体指针，方便地填充字段
+    twr_disdata_msg_t *disdata_msg = (twr_disdata_msg_t *)buffer;
+
+    // 3. 填充 MAC 头部
+    disdata_msg->frame_ctrl[0] = FCF_BYTE_0;
+    disdata_msg->frame_ctrl[1] = FCF_BYTE_1;
+    disdata_msg->sequence_num  = seq_num;
+
+    // 填充 PAN ID (小端字节序)
+    disdata_msg->pan_id[0] = pan_id & 0xFF;
+    disdata_msg->pan_id[1] = (pan_id >> 8) & 0xFF;
+
+    // 填充目标地址
+    disdata_msg->dest_addr[0] = dest_addr & 0xFF;
+    disdata_msg->dest_addr[1] = (dest_addr >> 8) & 0xFF;
+
+    // 填充源地址
+    disdata_msg->source_addr[0] = source_addr & 0xFF;
+    disdata_msg->source_addr[1] = (source_addr >> 8) & 0xFF;
+
+    // 4. 填充应用层载荷
+    disdata_msg->function_code = FUNC_CODE_DISDATA;
+    memcpy(disdata_msg->poll_tx_ts, poll_tx_ts, 5);
+    memcpy(disdata_msg->poll_rx_ts, poll_rx_ts, 5);
+    memcpy(disdata_msg->resp_tx_ts, resp_tx_ts, 5);
+    memcpy(disdata_msg->resp_rx_ts, resp_rx_ts, 5);
+    memcpy(disdata_msg->final_tx_ts, final_tx_ts, 5);
+    memcpy(disdata_msg->final_rx_ts, final_rx_ts, 5);
+
+    // 5. 返回生成的帧的实际长度
+    return (int16_t)frame_size;
+}
+
+/*************************************************************************************************/
+/* disdata帧解析函数实现                                                                                */
+/*************************************************************************************************/
+int16_t parse_disdata_frame(const uint8_t *buffer, uint16_t length,
+                            twr_disdata_msg_t *parsed_msg)
+{
+    // 1. 参数校验
+    if (buffer == NULL || parsed_msg == NULL) {
+        return -1; // 返回错误
+    }
+
+    // 2. 长度校验
+    if (length < sizeof(twr_disdata_msg_t)) {
+        return -1; // 返回错误
+    }
+
+    // 3. 将缓冲区指针转换为结构体指针
+    const twr_disdata_msg_t *received_msg = (const twr_disdata_msg_t *)buffer;
+
+    // 4. 内容校验：检查帧的关键字段是否符合预期
+    if (received_msg->frame_ctrl[0] != FCF_BYTE_0 || received_msg->frame_ctrl[1] != FCF_BYTE_1) {
+        return -1; // 不是我们期望的帧格式，返回错误
+    }
+    if (received_msg->function_code != FUNC_CODE_DISDATA) {
+        return -1; // 这不是一个 Final 帧，返回错误
+    }
+
+    // 5. 所有校验通过，将解析出的数据复制到输出结构体中
+    memcpy(parsed_msg, received_msg, sizeof(twr_disdata_msg_t));
+
+    return 0; // 解析成功，返回 0
+}

@@ -22,9 +22,10 @@
 
 // 应用层功能码，用于区分不同的帧
 typedef enum {
-    FUNC_CODE_POLL  = 0x21, // 标签发起的轮询帧
-    FUNC_CODE_RESP  = 0x10, // 基站回复的响应帧
-    FUNC_CODE_FINAL = 0x23  // 标签发送的最终帧
+    FUNC_CODE_POLL    = 0x21, // 标签发起的轮询帧
+    FUNC_CODE_RESP    = 0x10, // 基站回复的响应帧
+    FUNC_CODE_FINAL   = 0x23, // 标签发送的最终帧
+    FUNC_CODE_DISDATA = 0x32  // 发送的最后一帧数据
 } twr_function_code_e;
 
 /*************************************************************************************************/
@@ -83,6 +84,27 @@ typedef struct {
     uint8_t final_tx_ts[5]; // final发送时间戳
     uint8_t FCS[2];
 } PACKED twr_final_msg_t;
+
+/**
+ * @brief disdata () 帧结构体
+ * @note  由 Anchor 发送，用于将所有时间戳信息传递给 Tag,以完成距离计算。
+ *35字节
+ */
+typedef struct {
+    uint8_t frame_ctrl[2];
+    uint8_t sequence_num;
+    uint8_t pan_id[2];
+    uint8_t dest_addr[2];   // 目标地址 (Anchor 的短地址)
+    uint8_t source_addr[2]; // 源地址 (Tag 自身的短地址)
+    uint8_t function_code;  // 功能码, 应为 FUNC_CODE_FINAL
+    uint8_t poll_tx_ts[5];  // poll发送时间戳
+    uint8_t poll_rx_ts[5];  // poll接收时间戳
+    uint8_t resp_tx_ts[5];  // resp发送时间戳
+    uint8_t resp_rx_ts[5];  // resp接收时间戳
+    uint8_t final_tx_ts[5]; // final发送时间戳
+    uint8_t final_rx_ts[5]; // final接收时间戳
+    uint8_t FCS[2];
+} PACKED twr_disdata_msg_t;
 
 // 恢复默认的内存对齐方式
 #ifndef __GNUC__

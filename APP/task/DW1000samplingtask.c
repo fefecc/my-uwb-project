@@ -27,10 +27,11 @@ static volatile isr_timestamp_packet_t isr_timestamp_packet = {0};  // 用来记
 
 // TAG_STATE
 typedef enum {
-    TAG_STATE_IDLE,                  // 空闲状态，等待发起下一次测距
-    TAG_STATE_AWAIT_POLL_TX_CONFIRM, // 已发送Poll，等待硬件发送完成的确认
-    TAG_STATE_AWAIT_RESPONSE_RX,     // 已开启接收，等待来自基站(Anchor)的Response消息
-    TAG_STATE_AWAIT_FINAL_TX_CONFIRM // 已发送Final消息，等待硬件发送完成的确认
+    TAG_STATE_IDLE,                   // 空闲状态，等待发起下一次测距
+    TAG_STATE_AWAIT_POLL_TX_CONFIRM,  // 已发送Poll，等待硬件发送完成的确认
+    TAG_STATE_AWAIT_RESPONSE_RX,      // 已开启接收，等待来自基站(Anchor)的Response消息
+    TAG_STATE_AWAIT_FINAL_TX_CONFIRM, // 已发送Final消息，等待硬件发送完成的确认
+    TAG_STATE_AWAIT_DISDATA_RX        // 开启最后的dis数据接收
 } Tag_State_t;
 
 // ANCHOR_STATE
@@ -43,7 +44,9 @@ typedef enum {
 
     ANCHOR_STATE_AWAIT_RESPONSE_TX_CONFIRM, // 已收到 Poll，并已发送 Response，等待硬件发送完成的确认
 
-    ANCHOR_STATE_AWAIT_FINAL_RX // 已发送 Response，并已开启接收，等待来自 Tag 的 Final 消息
+    ANCHOR_STATE_AWAIT_FINAL_RX, // 已发送 Response，并已开启接收，等待来自 Tag 的 Final 消息
+
+    ANCHOR_STATE_AWAIT_DISDATA_TX_CONFIRM // 等待最后的dis数据发送完成
 
 } Anchor_State_t;
 
@@ -58,7 +61,7 @@ uwb_node_profile_u64_t AnchorNode_u64[MaxAnchorNum] = {0};
 
 uwb_node_profile_t AnchorNode[MaxAnchorNum] = {
     {
-        .short_addr  = 0x0033,
+        .short_addr  = 0x0032,
         .poll_tx_ts  = {0},
         .poll_rx_ts  = {0},
         .resp_tx_ts  = {0},
@@ -97,18 +100,19 @@ void dw1000TagMain(void)
     while (1) {
         switch (g_current_tag_state) {
             case TAG_STATE_IDLE: {
-                osDelay(1000); // 定时1s左右发一次数据
-                HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_6);
-                clear_node_profile(&AnchorNode[0]);
+                osDelay(1000);                         // 定时1s左右发一次数据
+                HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_6); // 指示灯，表示重新发送了一个数据栈
 
-                static int16_t frame_size = 0;
+                clear_node_profile(&AnchorNode[0]); // 清空tag机的节点数据
+
+                int16_t frame_size = 0;
                 // 填充poll帧数据
                 frame_size = create_poll_frame(dw1000tx_buffer, sizeof(dw1000tx_buffer), local_device.seqNum,
-                                               local_device.pan_id, AnchorNode[0].short_addr, local_device.short_addr);
+                                               local_device.pan_id, AnchorNode[0].short_addr, local_device.short_addr); // 发送poll帧，通知开始应答数据了
 
                 dwt_writetxdata(frame_size, dw1000tx_buffer, 0); /* Zero offset in TX buffer. */
                 dwt_writetxfctrl(frame_size, 0);
-                dwt_starttx(DWT_START_TX_IMMEDIATE);
+                dwt_starttx(DWT_START_TX_IMMEDIATE); // 直接进行发送，这个没办法进行延时操作，所有的延时都是从这一帧的发送时间开始计算的
 
                 g_current_tag_state = TAG_STATE_AWAIT_POLL_TX_CONFIRM;
                 break;
@@ -123,11 +127,10 @@ void dw1000TagMain(void)
                     if (notified_value & UWB_EVENT_TX_DONE) {
 
                         // 在这个状态时间戳
-                        mymemcopytimestamp(AnchorNode[0].poll_tx_ts, isr_timestamp_packet.txtimestamp); // 设置poll发送这个时间点的时间戳
+                        mymemcopytimestamp(AnchorNode[0].poll_tx_ts, isr_timestamp_packet.txtimestamp); // 发送完成，设置poll发送这个时间点的时间戳
 
                         dwt_setrxtimeout(65535); // 单位是 1.0256 us (512/499.2MHz) 大概
                                                  // 65毫秒超时
-
                         dwt_rxenable(0);
                         // 切换到等待接收状态
                         g_current_tag_state = TAG_STATE_AWAIT_RESPONSE_RX;
@@ -165,9 +168,9 @@ void dw1000TagMain(void)
 
                             uint64_t transmitDelayTimetick; // 计算延时之后的基础时间
 
-                            transmitDelayTimetick = transmitDelayTime(u8_5byte_TO_u64(AnchorNode[0].resp_rx_ts), 5);
+                            transmitDelayTimetick = transmitDelayTime(u8_5byte_TO_u64(AnchorNode[0].resp_rx_ts), 5); // 计算延时
 
-                            dwt_setdelayedtrxtime((uint32_t)(transmitDelayTimetick >> 8)); // 低位直接忽略
+                            dwt_setdelayedtrxtime((uint32_t)(transmitDelayTimetick >> 8)); // 低位直接忽略，在计算的时候就忽略了
 
                             mymemcopytimestamp(AnchorNode[0].poll_rx_ts,
                                                received_response_msg.poll_rx_ts);
@@ -175,7 +178,8 @@ void dw1000TagMain(void)
                                                received_response_msg.resp_tx_ts);
 
                             u64_TO_u8_5byte(transmitDelayTimetick, AnchorNode[0].final_tx_ts);
-                            static int16_t frame_size = 0;
+
+                            int16_t frame_size = 0;
                             // 填充poll帧数据
                             // 构造一个final函数
 
@@ -195,12 +199,12 @@ void dw1000TagMain(void)
                             g_current_tag_state = TAG_STATE_AWAIT_FINAL_TX_CONFIRM;
 
                         } else {
-                            printf("ERROR: RESPONSE frame error\n"); // 帧错误
+                            printf("ERROR: RESPONSE frame error \n"); // 帧错误
                             reset_tag_state_machine(&g_current_tag_state);
                         }
 
                     } else {
-                        printf("ERROR: RESPONSE frame interrupt error\n"); // 中断类型错误
+                        printf("ERROR: RESPONSE frame interrupt error notified_value: %lu \r\n", notified_value); // 中断类型错误
                         reset_tag_state_machine(&g_current_tag_state);
                     }
                 } else {
@@ -216,10 +220,14 @@ void dw1000TagMain(void)
                                     UINT32_MAX, /* 退出时清除所有通知位 */
                                     &notified_value, pdMS_TO_TICKS(100)) == pdTRUE) {
                     if (notified_value & UWB_EVENT_TX_DONE) {
-                        // Final 消息发送成功，一次完整的测距流程结束！
-                        printf("SUCCESS: twr \n");
-                        local_device.seqNum++;                         // 递增序列号，为下一次做准备
-                        reset_tag_state_machine(&g_current_tag_state); // 成功接收，复位
+                        // // Final 消息发送成功，一次完整的测距流程结束！
+                        // printf("SUCCESS: twr \n");
+                        // local_device.seqNum++;                         // 递增序列号，为下一次做准备
+                        // reset_tag_state_machine(&g_current_tag_state); // 成功接收，复位
+
+                        dwt_setrxtimeout(65535); // 单位是 1.0256 us (512/499.2MHz) 大概65毫秒超时
+                        dwt_rxenable(0);
+                        g_current_tag_state = TAG_STATE_AWAIT_DISDATA_RX; // 直接将final帧直接发回来，这样子可以直接在tag上解析数据
                     } else {
                         printf("ERROR:AWAIT FINAL_TX timeout\n");
                         reset_tag_state_machine(&g_current_tag_state);
@@ -232,6 +240,75 @@ void dw1000TagMain(void)
 
                 break;
             }
+            case TAG_STATE_AWAIT_DISDATA_RX: {
+                if (xTaskNotifyWait(0x00,       /* 进入时不清除所有通知位 */
+                                    UINT32_MAX, /* 退出时清除所有通知位 */
+                                    &notified_value, pdMS_TO_TICKS(100)) == pdTRUE) {
+                    // 这一帧数据主要是用来将数据发送回tag，在tag上完成计算，并进行数据的处理，这样子就不需要考虑时钟同步的问题
+                    if (notified_value & UWB_EVENT_RX_DONE) {
+                        uint16_t frame_len =
+                            dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
+
+                        dwt_readrxdata(dw1000rx_buffer, frame_len, 0);
+
+                        twr_disdata_msg_t received_disdata_msg;
+
+                        if (!parse_disdata_frame(dw1000rx_buffer, frame_len,
+                                                 &received_disdata_msg)) {
+
+                            mymemcopytimestamp(AnchorNode[0].poll_tx_ts,
+                                               received_disdata_msg.poll_tx_ts);
+                            mymemcopytimestamp(AnchorNode[0].poll_rx_ts,
+                                               received_disdata_msg.poll_rx_ts);
+                            mymemcopytimestamp(AnchorNode[0].resp_tx_ts,
+                                               received_disdata_msg.resp_tx_ts);
+                            mymemcopytimestamp(AnchorNode[0].resp_rx_ts,
+                                               received_disdata_msg.resp_rx_ts);
+                            mymemcopytimestamp(AnchorNode[0].final_tx_ts,
+                                               received_disdata_msg.final_tx_ts);
+                            mymemcopytimestamp(AnchorNode[0].final_rx_ts,
+                                               received_disdata_msg.final_rx_ts);
+
+                            AnchorNode_u64[0].poll_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].poll_tx_ts);
+                            AnchorNode_u64[0].poll_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].poll_rx_ts);
+                            AnchorNode_u64[0].resp_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].resp_tx_ts);
+                            AnchorNode_u64[0].resp_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].resp_rx_ts);
+                            AnchorNode_u64[0].final_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].final_tx_ts);
+                            AnchorNode_u64[0].final_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[0].final_rx_ts);
+
+                            twr_distance = calculate_distance_from_timestamps(
+                                AnchorNode_u64[0].poll_tx_ts, AnchorNode_u64[0].resp_rx_ts,
+                                AnchorNode_u64[0].final_tx_ts, AnchorNode_u64[0].poll_rx_ts,
+                                AnchorNode_u64[0].resp_tx_ts, AnchorNode_u64[0].final_rx_ts);
+
+                            printf("distance : %f\r\n", twr_distance);
+
+                            // 发送数据给sd卡
+                            BaseType_t Xsendresult = xQueueSend(dw1000data_queue, &twr_distance, 0);
+
+                            if (Xsendresult != pdPASS) {
+                                printf("dw1000 data  queue full\r\n");
+                            }
+
+                            reset_tag_state_machine(&g_current_tag_state);
+                        }
+
+                    } else {
+                        printf("ERROR:AWAIT DISDATA_TX timeout\n");
+                        reset_tag_state_machine(&g_current_tag_state);
+                    }
+                } else {
+                    printf("ERROR:AWAIT DISDATA_TX timeout\n");
+                    reset_tag_state_machine(&g_current_tag_state);
+                }
+                break;
+            }
         }
     }
 }
@@ -240,16 +317,20 @@ static Anchor_State_t g_current_anchor_state = ANCHOR_STATE_AWAIT_POLL_RX;
 // static uint32_t notified_value               = 0;
 void dw1000AnchorMain(void)
 {
-    reset_anchor_state_machine(&g_current_anchor_state); // 开启接收
+    reset_anchor_state_machine(&g_current_anchor_state); // 直接复位接收状态机 这个函数中会是这个dw1000进行一直等待的操作
     while (1) {
         switch (g_current_anchor_state) {
             // --- 状态 1: 等待 Poll 消息 ---
             case ANCHOR_STATE_AWAIT_POLL_RX: {
-                // 无限期等待 ISR 的通知
+                //  一般这里是不会超时的，但是如果太久没有数据，这里会进行强制性软件复位
                 if (xTaskNotifyWait(0x00,       /* 进入时不清除所有通知位 */
                                     UINT32_MAX, /* 退出时清除所有通知位 */
                                     &notified_value, pdMS_TO_TICKS(3000)) == pdTRUE) {
-                    if (notified_value & UWB_EVENT_RX_DONE) {
+                    // 检测isr给出的中断标志，使用位掩码给出，用来检测中断事件
+
+                    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+
+                    if (notified_value & UWB_EVENT_RX_DONE) { // 接收成功事件
                         uint16_t frame_len =
                             dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
 
@@ -259,55 +340,54 @@ void dw1000AnchorMain(void)
                         dwt_readrxdata(dw1000rx_buffer, frame_len, 0); // 读取的数据
 
                         //  dwt_readrxdata(rx_buffer, frame_len, 0);
-                        twr_poll_msg_t received_poll_msg;
+
+                        twr_poll_msg_t received_poll_msg; // 这个状态是用读取poll帧的数据
 
                         if (!parse_poll_frame(dw1000rx_buffer, frame_len,
-                                              &received_poll_msg)) {
-                            clear_node_profile(&AnchorNode[0]);
+                                              &received_poll_msg)) { // 解析poll帧数据
+
+                            clear_node_profile(&AnchorNode[0]); // 清空节点的数据，保证不会有什么东西的干扰
 
                             mymemcopytimestamp(
                                 AnchorNode[0].poll_rx_ts,
                                 isr_timestamp_packet
-                                    .rxtimestamp); // 这个接收的数据是poll帧
+                                    .rxtimestamp); // 拷贝数据到节点中 ，接收到poll数据之后，这个时间点的实际戳进行保存
 
-                            uint64_t transmitDelayTimetick; // 计算延时之后的基础时间
+                            uint64_t transmitDelayTimetick; // 计算延时之后的发送时间
 
                             transmitDelayTimetick = transmitDelayTime(
-                                u8_5byte_TO_u64(AnchorNode[0].poll_rx_ts), 5); // 5ms
+                                u8_5byte_TO_u64(AnchorNode[0].poll_rx_ts), 5); // 5ms延时之后发送数据，计算延时时候的发送时间
 
-                            u64_TO_u8_5byte(transmitDelayTimetick,
-                                            AnchorNode[0].resp_tx_ts);
+                            u64_TO_u8_5byte(transmitDelayTimetick, AnchorNode[0].resp_tx_ts); // 低9位直接忽略，在函数中实现
 
-                            dwt_setdelayedtrxtime((uint32_t)(transmitDelayTimetick >>
-                                                             8)); // 低位直接忽略
+                            dwt_setdelayedtrxtime((uint32_t)(transmitDelayTimetick >> 8)); // 这里是因为函数写入只写入高4个字节，所以右移8位
 
                             uint16_t dest_addrtemp =
                                 received_poll_msg.source_addr[0] |
-                                ((uint16_t)received_poll_msg.source_addr[1] << 8);
+                                ((uint16_t)received_poll_msg.source_addr[1] << 8); // 解析出数据的源地址，这个就是下面的帧的目标地址
 
-                            static int16_t frame_size = 0; // 计算
+                            int16_t frame_size = 0; // 计算resp帧的数据长度，可以直接从创建的数据中直接获取
 
                             frame_size = create_resp_frame(
                                 dw1000tx_buffer, sizeof(dw1000tx_buffer),
                                 received_poll_msg.sequence_num, local_device.pan_id,
                                 dest_addrtemp, local_device.short_addr,
-                                AnchorNode[0].poll_rx_ts, AnchorNode[0].resp_tx_ts);
+                                AnchorNode[0].poll_rx_ts, AnchorNode[0].resp_tx_ts); // 创建数据
 
-                            dwt_writetxdata(frame_size, dw1000tx_buffer, 0);
-                            dwt_writetxfctrl(frame_size, 0);
-
-                            // dwt_writetxdata(sizeof(rx_resp_msg), rx_resp_msg, 0);
-                            // dwt_writetxfctrl(sizeof(rx_resp_msg) , 0);
+                            dwt_writetxdata(frame_size, dw1000tx_buffer, 0); // 设置发送的数据信息
+                            dwt_writetxfctrl(frame_size, 0);                 // 发送数据的控制信息
 
                             dwt_starttx(DWT_START_TX_DELAYED); // 延时发送方式
 
                             // 切换到下一个状态
                             g_current_anchor_state =
                                 ANCHOR_STATE_AWAIT_RESPONSE_TX_CONFIRM;
+                            break;
                         } else {
                             // 如果不是 Poll 消息，忽略并重新开启接收
                             printf("ERROR: POLL frame error\n"); // 帧解析错误
                             reset_anchor_state_machine(&g_current_anchor_state);
+                            break;
                         }
                     } else {
                         // 收到其他非 RX_DONE 事件，重新开启接收
@@ -315,19 +395,23 @@ void dw1000AnchorMain(void)
                             "ERROR: POLL frame interrupt error notified_value:%lu\n",
                             notified_value); // 中断类型错误
                         reset_anchor_state_machine(&g_current_anchor_state);
+                        break;
                     }
                 } else {
-                    // 这个等待函数是永久等待，不会到这里的
+                    printf("ERROR: HARD ERROR NO RESET \r\n");
                     reset_anchor_state_machine(&g_current_anchor_state);
+                    break;
                 }
-            } break;
+                reset_anchor_state_machine(&g_current_anchor_state);
+                break;
+            }
 
             // --- 状态 2: 等待 Response 发送完成 ---
             case ANCHOR_STATE_AWAIT_RESPONSE_TX_CONFIRM: {
                 // 等待发送完成通知，设置一个短暂的超时
-                if (xTaskNotifyWait(0x00,       /* 进入时不清除所有通知位 */
-                                    UINT32_MAX, /* 退出时清除所有通知位 */
-                                    &notified_value, pdMS_TO_TICKS(100)) == pdTRUE) {
+                if (xTaskNotifyWait(0x00,                                             /* 进入时不清除所有通知位 */
+                                    UINT32_MAX,                                       /* 退出时清除所有通知位 */
+                                    &notified_value, pdMS_TO_TICKS(100)) == pdTRUE) { // 超时设置的是100ms，但是数据发送实际上只有65ms左右，就会发送超时中断
                     if (notified_value & UWB_EVENT_TX_DONE) {
                         // 立即开启接收器，等待 Tag 的 Final 消息 (设置硬件超时)
                         dwt_setrxtimeout(65535);
@@ -335,15 +419,19 @@ void dw1000AnchorMain(void)
 
                         // 切换到下一个状态
                         g_current_anchor_state = ANCHOR_STATE_AWAIT_FINAL_RX;
+                        break;
                     } else {
                         printf("ERROR: RESPONSE frame interrupt error\n");
                         reset_anchor_state_machine(&g_current_anchor_state);
+                        break;
                     }
                 } else {
                     // 发送确认超时，流程失败，回到监听 Poll 的状态
                     printf("ERROR: AWAIT RESPONSE_TX timeout\n");
                     reset_anchor_state_machine(&g_current_anchor_state);
+                    break;
                 }
+                reset_anchor_state_machine(&g_current_anchor_state);
                 break;
             }
 
@@ -352,7 +440,9 @@ void dw1000AnchorMain(void)
                 if (xTaskNotifyWait(0x00,       /* 进入时不清除所有通知位 */
                                     UINT32_MAX, /* 退出时清除所有通知位 */
                                     &notified_value, pdMS_TO_TICKS(100)) == pdTRUE) {
-                    if (notified_value & UWB_EVENT_RX_DONE) {
+
+                    // 这个状态主要用来接收final帧数据的内容
+                    if (notified_value & UWB_EVENT_RX_DONE) { // 接收中断触发标志
                         uint16_t frame_len =
                             dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
 
@@ -362,10 +452,9 @@ void dw1000AnchorMain(void)
 
                         if (!parse_final_frame(dw1000rx_buffer, frame_len,
                                                &received_final_msg)) {
-                            mymemcopytimestamp(
-                                AnchorNode[0].final_rx_ts,
-                                isr_timestamp_packet.rxtimestamp); // 这个接收的数据是poll帧
 
+                            // 解析结果表示确实是final帧，否则直接复位状态机
+                            // 这里是直接将数据拷贝到数据mac数据表中
                             mymemcopytimestamp(AnchorNode[0].poll_tx_ts,
                                                received_final_msg.poll_tx_ts);
                             mymemcopytimestamp(AnchorNode[0].poll_rx_ts,
@@ -376,50 +465,106 @@ void dw1000AnchorMain(void)
                                                received_final_msg.resp_rx_ts);
                             mymemcopytimestamp(AnchorNode[0].final_tx_ts,
                                                received_final_msg.final_tx_ts);
+                            mymemcopytimestamp(AnchorNode[0].final_rx_ts,
+                                               isr_timestamp_packet.rxtimestamp); // 读取时间戳的全局变量
 
-                            AnchorNode_u64->short_addr = local_device.short_addr;
-                            AnchorNode_u64->poll_tx_ts =
+                            uint64_t transmitDelayTimetick; // 计算延时之后的发送时间
+                            transmitDelayTimetick = transmitDelayTime(
+                                u8_5byte_TO_u64(AnchorNode[0].final_rx_ts), 5); // 延时5ms ，用来设置延时发送的时间
+
+                            dwt_setdelayedtrxtime((uint32_t)(transmitDelayTimetick >> 8)); // 低位直接忽略
+
+                            // 用来计算最终数据，用于计算最后的dis参数
+                            AnchorNode_u64->short_addr = local_device.short_addr; // 地址赋值
+
+                            AnchorNode_u64[0].poll_tx_ts =
                                 u8_5byte_TO_u64(AnchorNode[0].poll_tx_ts);
-                            AnchorNode_u64->poll_rx_ts =
+                            AnchorNode_u64[0].poll_rx_ts =
                                 u8_5byte_TO_u64(AnchorNode[0].poll_rx_ts);
-                            AnchorNode_u64->resp_tx_ts =
+                            AnchorNode_u64[0].resp_tx_ts =
                                 u8_5byte_TO_u64(AnchorNode[0].resp_tx_ts);
-                            AnchorNode_u64->resp_rx_ts =
+                            AnchorNode_u64[0].resp_rx_ts =
                                 u8_5byte_TO_u64(AnchorNode[0].resp_rx_ts);
-                            AnchorNode_u64->final_tx_ts =
+                            AnchorNode_u64[0].final_tx_ts =
                                 u8_5byte_TO_u64(AnchorNode[0].final_tx_ts);
-                            AnchorNode_u64->final_rx_ts =
+                            AnchorNode_u64[0].final_rx_ts =
                                 u8_5byte_TO_u64(AnchorNode[0].final_rx_ts);
 
                             twr_distance = calculate_distance_from_timestamps(
-                                AnchorNode_u64->poll_tx_ts, AnchorNode_u64->resp_rx_ts,
-                                AnchorNode_u64->final_tx_ts, AnchorNode_u64->poll_rx_ts,
-                                AnchorNode_u64->resp_tx_ts, AnchorNode_u64->final_rx_ts);
+                                AnchorNode_u64[0].poll_tx_ts, AnchorNode_u64[0].resp_rx_ts,
+                                AnchorNode_u64[0].final_tx_ts, AnchorNode_u64[0].poll_rx_ts,
+                                AnchorNode_u64[0].resp_tx_ts, AnchorNode_u64[0].final_rx_ts);
 
                             printf("distance : %f\r\n", twr_distance);
 
-                            BaseType_t Xsendresult = xQueueSend(dw1000data_queue, &twr_distance, 0);
+                            uint16_t dest_addrtemp =
+                                received_final_msg.source_addr[0] |
+                                ((uint16_t)received_final_msg.source_addr[1] << 8); // 直接计算源目标地址
 
-                            if (Xsendresult != pdPASS) {
-                                printf("dw1000 data  queue full\r\n");
-                            }
+                            int16_t frame_size = 0; // 读取写入参数的长度
 
-                            reset_anchor_state_machine(
-                                &g_current_anchor_state); // 成功解析返回等待模式
+                            frame_size = create_disdata_frame(
+                                dw1000tx_buffer, sizeof(dw1000tx_buffer),
+                                received_final_msg.sequence_num, local_device.pan_id,
+                                dest_addrtemp, local_device.short_addr,
+                                AnchorNode[0].poll_tx_ts, AnchorNode[0].poll_rx_ts,
+                                AnchorNode[0].resp_tx_ts, AnchorNode[0].resp_rx_ts,
+                                AnchorNode[0].final_tx_ts, AnchorNode[0].final_rx_ts);
 
+                            dwt_writetxdata(frame_size, dw1000tx_buffer, 0);
+
+                            dwt_writetxfctrl(frame_size, 0);
+
+                            dwt_starttx(DWT_START_TX_IMMEDIATE); // 延时发送方式，发送数据启动
+                            printf("dw1000 send start\r\n");
+
+                            g_current_anchor_state =
+                                ANCHOR_STATE_AWAIT_DISDATA_TX_CONFIRM; // 在这帧数据中最后会将代码上的数据直接发送给tag，然后在tag中进行最后的处理
+                            break;
                         } else {
                             printf("ERROR: FINAL frame error\n"); // 帧解析错误
                             reset_anchor_state_machine(&g_current_anchor_state);
+                            break;
                         }
 
                     } else {
                         printf("ERROR: FINAL frame interrupt error:%lu\n", notified_value); // 中断类型错误
                         reset_anchor_state_machine(&g_current_anchor_state);
+                        break;
                     }
                 } else {
                     printf("ERROR: AWAIT FINAL_TX timeout\n"); // 硬件超时
                     reset_anchor_state_machine(&g_current_anchor_state);
+                    break;
                 }
+                reset_anchor_state_machine(&g_current_anchor_state);
+                break;
+            }
+            // 发送最后一帧disdata数据
+            case ANCHOR_STATE_AWAIT_DISDATA_TX_CONFIRM: { // 等待最后的dis数据发送完成
+
+                if (xTaskNotifyWait(0x00,       /* 进入时不清除所有通知位 */
+                                    UINT32_MAX, /* 退出时清除所有通知位 */
+                                    &notified_value, pdMS_TO_TICKS(100)) == pdTRUE) {
+                    if (notified_value & UWB_EVENT_TX_DONE) {
+                        // 复位基站状态机
+                        // 这里已经接收了一帧数据，所以直接复位就可以了
+                        printf("send disdata succeed \r\n");
+                        reset_anchor_state_machine(&g_current_anchor_state);
+                        break;
+                    }
+
+                    else {
+                        printf("ERROR: AWAIT DISDATA_TX timeout\r\n");
+                        reset_anchor_state_machine(&g_current_anchor_state);
+                        break;
+                    }
+                } else {
+                    printf("ERROR: AWAIT DISDATA_TX timeout\r\n");
+                    reset_anchor_state_machine(&g_current_anchor_state);
+                    break;
+                }
+                reset_anchor_state_machine(&g_current_anchor_state);
                 break;
             }
         }
@@ -437,10 +582,9 @@ void DW1000samplingtask(void *argument)
     dw1000samplingTaskNotifyHandle =
         xTaskGetCurrentTaskHandle(); // 获取当前的线程句柄
     UWBMssageInit();                 // 初始化message数据，这个数据是直接从flash中读取的数据，包含本地的数据
-    // BPhero_UWB_Message_Init();       // 消息结构体初始化
-    BPhero_UWB_Init(); // dwm1000 init related
+    BPhero_UWB_Init();               // dwm1000 init related
 
-    // dw1000TagMain();
+    dw1000TagMain();
     dw1000AnchorMain();
 }
 
@@ -623,6 +767,9 @@ double calculate_distance_from_timestamps(uint64_t tag_poll_tx_ts, uint64_t tag_
     return distance_meters;
 }
 
+#define RX_SOFTRESET_BIT_MASK   (1UL << 28)   // Bit 28 for RX reset
+#define ALL_SOFTRESET_BITS_MASK (0xFUL << 28) // Bits 31-28, 正常操作时应为 1
+
 void reset_tag_state_machine(Tag_State_t *current_tag_state)
 {
     // 1. 禁用 DW1000 中断，防止 ISR 在复位过程中干扰
@@ -631,28 +778,31 @@ void reset_tag_state_machine(Tag_State_t *current_tag_state)
                               | DWT_INT_RFCG // 接收成功 (CRC OK)
                               | DWT_INT_RFTO // 接收帧等待超时
                               | DWT_INT_RFCE // 接收 CRC 错误
-        // | DWT_INT_RXPTO  // 前导码超时 (可选)
-        // | DWT_INT_SFDT   // SFD 超时 (可选)
+
+                              | DWT_INT_RXPTO // 前导码超时 (可选)
+                              | DWT_INT_SFDT  // SFD 超时 (可选)
         // | DWT_INT_RPHE   // PHY 头错误 (可选)
         ;
 
     dwt_setinterrupt(interrupt_mask, 0); // 禁用所有 DW1000 中断源
 
-    // 2. 强制 DW1000 进入 IDLE 状态，中止任何当前操作
-    //    这是确保 DW1000 状态干净的关键步骤
-    dwt_forcetrxoff();
+    // 硬件进入idle状态
+    dwt_forcetrxoff(); // 强制关闭接收器
 
-    // 3. 清除可能残留的 DW1000 状态寄存器标志位
-    //    读取并写回 SYS_STATUS 可以清除所有已置位的标志位
     uint32_t status_reg = dwt_read32bitreg(SYS_STATUS_ID);
     dwt_write32bitreg(SYS_STATUS_ID, status_reg); // 写 1 清除置位的标志
 
+    uint32_t pmsc_ctrl0_value;
+
+    pmsc_ctrl0_value = dwt_read32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET);
+
+    dwt_write32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET, pmsc_ctrl0_value & ~RX_SOFTRESET_BIT_MASK);
+    osDelay(2);
+    dwt_write32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET, (pmsc_ctrl0_value & ~ALL_SOFTRESET_BITS_MASK) | ALL_SOFTRESET_BITS_MASK);
     // 4. 清除 RTOS 任务通知状态
-    //    防止旧的通知影响复位后的状态机行为
     if (dw1000samplingTaskNotifyHandle != NULL) {
         xTaskNotifyStateClear(dw1000samplingTaskNotifyHandle);
     } else {
-        // 如果在任务内部调用，可以传入 NULL
         xTaskNotifyStateClear(NULL);
     }
 
@@ -668,9 +818,6 @@ void reset_tag_state_machine(Tag_State_t *current_tag_state)
     //    示例：启用发送完成、接收完成、接收超时、接收错误中断
     dwt_setinterrupt(interrupt_mask, 1);
 }
-
-#define RX_SOFTRESET_BIT_MASK   (1UL << 28)   // Bit 28 for RX reset
-#define ALL_SOFTRESET_BITS_MASK (0xFUL << 28) // Bits 31-28, 正常操作时应为 1
 
 /**
  * @brief 复位 Anchor 状态机及其相关资源到初始状态。
@@ -693,18 +840,20 @@ void reset_anchor_state_machine(Anchor_State_t *current_anchor_state)
 
     dwt_setinterrupt(interrupt_mask, 0); // 禁用所有 DW1000 中断源
 
-    // 2. 强制 DW1000 进入 IDLE 状态
-    dwt_forcetrxoff();
+    // 硬件进入idle状态
+    dwt_forcetrxoff(); // 强制关闭接收器
+
     uint32_t status_reg = dwt_read32bitreg(SYS_STATUS_ID);
     dwt_write32bitreg(SYS_STATUS_ID, status_reg); // 写 1 清除置位的标志
 
     uint32_t pmsc_ctrl0_value;
-
+    // 复位接收机单元
     pmsc_ctrl0_value = dwt_read32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET);
 
     dwt_write32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET, pmsc_ctrl0_value & ~RX_SOFTRESET_BIT_MASK);
-    osDelay(1);
+    osDelay(2);
     dwt_write32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET, (pmsc_ctrl0_value & ~ALL_SOFTRESET_BITS_MASK) | ALL_SOFTRESET_BITS_MASK);
+
     // 4. 清除 RTOS 任务通知状态
     if (dw1000samplingTaskNotifyHandle != NULL) {
         xTaskNotifyStateClear(dw1000samplingTaskNotifyHandle);

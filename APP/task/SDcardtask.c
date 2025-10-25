@@ -70,77 +70,77 @@ void FatFs_GetVolume(void) // 计算设备容量
     printf("SD剩余：%ldMB\r\n", SD_FreeCapacity);
 }
 
-int16_t _512ByteFromImuDataFunc(void)
-{
-    FIL MyFile; // 文件对象
+// int16_t _512ByteFromImuDataFunc(void)
+// {
+//     FIL MyFile; // 文件对象
 
-    UINT MyFile_Num; // 写入数据的长度
+//     UINT MyFile_Num; // 写入数据的长度
 
-    uint8_t MyFile_Res; // 文件函数的返回值检测
+//     uint8_t MyFile_Res; // 文件函数的返回值检测
 
-    static BYTE MyFile_WriteBuffer[512] = {0}; // 要写入的数据
+//     static BYTE MyFile_WriteBuffer[512] = {0}; // 要写入的数据
 
-    static BYTE *FileWriteBufferPoint;
+//     static BYTE *FileWriteBufferPoint;
 
-    static MsgIMU_t MsgSD = {0};
+//     static MsgIMU_t MsgSD = {0};
 
-    uint16_t length = 0;
+//     uint16_t length = 0;
 
-    MyFile_Res =
-        f_open(&MyFile, "IMUData.txt",
-               FA_CREATE_ALWAYS | FA_WRITE); // 打开文件，若不存在则创建该文件
+//     MyFile_Res =
+//         f_open(&MyFile, "uwbdata.txt",
+//                FA_CREATE_ALWAYS | FA_WRITE); // 打开文件，若不存在则创建该文件
 
-    if (MyFile_Res == FR_OK) {
-        printf("文件打开/创建成功，准备写入数据...\r\n");
+//     if (MyFile_Res == FR_OK) {
+//         printf("文件打开/创建成功，准备写入数据...\r\n");
 
-        FileWriteBufferPoint = &MyFile_WriteBuffer[0];
+//         FileWriteBufferPoint = &MyFile_WriteBuffer[0];
 
-        while (1) {
-            xQueueReceive(IMUDataToSDTaskQueue, &MsgSD, portMAX_DELAY);
-            //(&MyFile_WriteBuffer[511] - FileWriteBufferPoint) <= sizeof(MsgIMU_t)
-            if ((sizeof(MyFile_WriteBuffer) -
-                 (FileWriteBufferPoint - MyFile_WriteBuffer)) >= sizeof(MsgIMU_t)) {
-                memcpy(FileWriteBufferPoint, &MsgSD, sizeof(MsgIMU_t));
-                FileWriteBufferPoint = FileWriteBufferPoint + sizeof(MsgIMU_t);
-            }
+//         while (1) {
+//             xQueueReceive(IMUDataToSDTaskQueue, &MsgSD, portMAX_DELAY);
+//             //(&MyFile_WriteBuffer[511] - FileWriteBufferPoint) <= sizeof(MsgIMU_t)
+//             if ((sizeof(MyFile_WriteBuffer) -
+//                  (FileWriteBufferPoint - MyFile_WriteBuffer)) >= sizeof(MsgIMU_t)) {
+//                 memcpy(FileWriteBufferPoint, &MsgSD, sizeof(MsgIMU_t));
+//                 FileWriteBufferPoint = FileWriteBufferPoint + sizeof(MsgIMU_t);
+//             }
 
-            else {
-                length = sizeof(MyFile_WriteBuffer) -
-                         (FileWriteBufferPoint - MyFile_WriteBuffer);
+//             else {
+//                 length = sizeof(MyFile_WriteBuffer) -
+//                          (FileWriteBufferPoint - MyFile_WriteBuffer);
 
-                memcpy(FileWriteBufferPoint, &MsgSD, length);
-                MyFile_Res = f_write(&MyFile, MyFile_WriteBuffer,
-                                     sizeof(MyFile_WriteBuffer), &MyFile_Num);
-                f_sync(&MyFile);
+//                 memcpy(FileWriteBufferPoint, &MsgSD, length);
+//                 MyFile_Res = f_write(&MyFile, MyFile_WriteBuffer,
+//                                      sizeof(MyFile_WriteBuffer), &MyFile_Num);
+//                 f_sync(&MyFile);
 
-                HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
+//                 HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
 
-                FileWriteBufferPoint = &MyFile_WriteBuffer[0];
-                memcpy(FileWriteBufferPoint, ((uint8_t *)&MsgSD) + length,
-                       sizeof(MsgIMU_t) - length);
-                FileWriteBufferPoint = &MyFile_WriteBuffer[0] + sizeof(MsgSD) - length;
-            }
+//                 FileWriteBufferPoint = &MyFile_WriteBuffer[0];
+//                 memcpy(FileWriteBufferPoint, ((uint8_t *)&MsgSD) + length,
+//                        sizeof(MsgIMU_t) - length);
+//                 FileWriteBufferPoint = &MyFile_WriteBuffer[0] + sizeof(MsgSD) - length;
+//             }
 
-            if (FileWriteBufferPoint == &MyFile_WriteBuffer[511]) {
-                MyFile_Res =
-                    f_write(&MyFile, MyFile_WriteBuffer, sizeof(MyFile_WriteBuffer),
-                            &MyFile_Num); // 向文件写入数据
-                f_sync(&MyFile);
-                HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
-                FileWriteBufferPoint = &MyFile_WriteBuffer[0];
-            }
-        }
+//             if (FileWriteBufferPoint == &MyFile_WriteBuffer[511]) {
+//                 MyFile_Res =
+//                     f_write(&MyFile, MyFile_WriteBuffer, sizeof(MyFile_WriteBuffer),
+//                             &MyFile_Num); // 向文件写入数据
+//                 f_sync(&MyFile);
+//                 HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
+//                 FileWriteBufferPoint = &MyFile_WriteBuffer[0];
+//             }
+//         }
 
-        f_close(&MyFile); // 关闭文件
+//         f_close(&MyFile); // 关闭文件
 
-    }
+//     }
 
-    else {
-        printf("文件打开/创建失败...\r\n");
-        return -1;
-    }
-    return 0;
-}
+//     else {
+//         printf("文件打开/创建失败...\r\n");
+//         return -1;
+//     }
+//     return 0;
+// }
 
 int16_t SDCardTaskFunc(void)
 {
