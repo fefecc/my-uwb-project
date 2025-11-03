@@ -53,22 +53,39 @@ typedef enum {
 void reset_anchor_state_machine(Anchor_State_t *current_anchor_state);
 void reset_tag_state_machine(Tag_State_t *current_tag_state);
 
-#define MaxAnchorNum 1 // 暂时使用一个节点
+#define MaxAnchorNum 3 // 暂时使用一个节点
 
 double twr_distance;
 
 uwb_node_profile_u64_t AnchorNode_u64[MaxAnchorNum] = {0};
 
-uwb_node_profile_t AnchorNode[MaxAnchorNum] = {
-    {
-        .short_addr  = 0x0032,
-        .poll_tx_ts  = {0},
-        .poll_rx_ts  = {0},
-        .resp_tx_ts  = {0},
-        .resp_rx_ts  = {0},
-        .final_tx_ts = {0},
-        .final_rx_ts = {0},
-    }};
+uwb_node_profile_t AnchorNode[MaxAnchorNum] = {{
+                                                   .short_addr  = 0x0034,
+                                                   .poll_tx_ts  = {0},
+                                                   .poll_rx_ts  = {0},
+                                                   .resp_tx_ts  = {0},
+                                                   .resp_rx_ts  = {0},
+                                                   .final_tx_ts = {0},
+                                                   .final_rx_ts = {0},
+                                               },
+                                               {
+                                                   .short_addr  = 0x0035,
+                                                   .poll_tx_ts  = {0},
+                                                   .poll_rx_ts  = {0},
+                                                   .resp_tx_ts  = {0},
+                                                   .resp_rx_ts  = {0},
+                                                   .final_tx_ts = {0},
+                                                   .final_rx_ts = {0},
+                                               },
+                                               {
+                                                   .short_addr  = 0x0036,
+                                                   .poll_tx_ts  = {0},
+                                                   .poll_rx_ts  = {0},
+                                                   .resp_tx_ts  = {0},
+                                                   .resp_rx_ts  = {0},
+                                                   .final_tx_ts = {0},
+                                                   .final_rx_ts = {0},
+                                               }};
 
 // dw1000_local_device_t local_device =
 //     {.frameCtrl[0] = 0x41,
@@ -77,12 +94,7 @@ uwb_node_profile_t AnchorNode[MaxAnchorNum] = {
 //      .pan_id       = 0xf0f0,
 //      .short_addr   = 0x0032};
 
-dw1000_local_device_t local_device =
-    {.frameCtrl[0] = 0x41,
-     .frameCtrl[1] = 0x88,
-     .seqNum       = 0,
-     .pan_id       = 0xf0f0,
-     .short_addr   = 0x0033};
+dw1000_local_device_t local_device = {.frameCtrl[0] = 0x41, .frameCtrl[1] = 0x88, .seqNum = 0, .pan_id = 0xf0f0, .short_addr = 0x0032};
 
 static uint8_t dw1000tx_buffer[FRAME_LEN_MAX]; // 发送数据
 static uint8_t dw1000rx_buffer[FRAME_LEN_MAX]; // 接收数据
@@ -91,6 +103,8 @@ extern srd_msg_dsss msg_f_send;
 
 static Tag_State_t g_current_tag_state = TAG_STATE_IDLE;
 static uint32_t notified_value         = 0;
+
+static uint16_t NodeIndex = 0;
 
 QueueHandle_t dw1000data_queue = NULL;
 
@@ -103,12 +117,18 @@ void dw1000TagMain(void)
                 osDelay(1000);                         // 定时1s左右发一次数据
                 HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_6); // 指示灯，表示重新发送了一个数据栈
 
-                clear_node_profile(&AnchorNode[0]); // 清空tag机的节点数据
+                clear_node_profile(&AnchorNode[NodeIndex]); // 清空tag机的节点数据
+
+                // 切换连接节点
+                // NodeIndex = (NodeIndex++) % 3;
+                // 自增通信的帧序号，用来检测帧是否是同一帧数据
+                local_device.seqNum++;
 
                 int16_t frame_size = 0;
+
                 // 填充poll帧数据
                 frame_size = create_poll_frame(dw1000tx_buffer, sizeof(dw1000tx_buffer), local_device.seqNum,
-                                               local_device.pan_id, AnchorNode[0].short_addr, local_device.short_addr); // 发送poll帧，通知开始应答数据了
+                                               local_device.pan_id, AnchorNode[NodeIndex].short_addr, local_device.short_addr); // 发送poll帧，通知开始应答数据了
 
                 dwt_writetxdata(frame_size, dw1000tx_buffer, 0); /* Zero offset in TX buffer. */
                 dwt_writetxfctrl(frame_size, 0);
@@ -127,7 +147,7 @@ void dw1000TagMain(void)
                     if (notified_value & UWB_EVENT_TX_DONE) {
 
                         // 在这个状态时间戳
-                        mymemcopytimestamp(AnchorNode[0].poll_tx_ts, isr_timestamp_packet.txtimestamp); // 发送完成，设置poll发送这个时间点的时间戳
+                        mymemcopytimestamp(AnchorNode[NodeIndex].poll_tx_ts, isr_timestamp_packet.txtimestamp); // 发送完成，设置poll发送这个时间点的时间戳
 
                         dwt_setrxtimeout(65535); // 单位是 1.0256 us (512/499.2MHz) 大概
                                                  // 65毫秒超时
@@ -164,20 +184,20 @@ void dw1000TagMain(void)
                         if (!parse_resp_frame(dw1000rx_buffer, frame_len, &received_response_msg)) {
 
                             // 解析成功
-                            mymemcopytimestamp(AnchorNode[0].resp_rx_ts, isr_timestamp_packet.rxtimestamp); // 这个接收的数据是response帧
+                            mymemcopytimestamp(AnchorNode[NodeIndex].resp_rx_ts, isr_timestamp_packet.rxtimestamp); // 这个接收的数据是response帧
 
                             uint64_t transmitDelayTimetick; // 计算延时之后的基础时间
 
-                            transmitDelayTimetick = transmitDelayTime(u8_5byte_TO_u64(AnchorNode[0].resp_rx_ts), 5); // 计算延时
+                            transmitDelayTimetick = transmitDelayTime(u8_5byte_TO_u64(AnchorNode[NodeIndex].resp_rx_ts), 5); // 计算延时
 
                             dwt_setdelayedtrxtime((uint32_t)(transmitDelayTimetick >> 8)); // 低位直接忽略，在计算的时候就忽略了
 
-                            mymemcopytimestamp(AnchorNode[0].poll_rx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].poll_rx_ts,
                                                received_response_msg.poll_rx_ts);
-                            mymemcopytimestamp(AnchorNode[0].resp_tx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].resp_tx_ts,
                                                received_response_msg.resp_tx_ts);
 
-                            u64_TO_u8_5byte(transmitDelayTimetick, AnchorNode[0].final_tx_ts);
+                            u64_TO_u8_5byte(transmitDelayTimetick, AnchorNode[NodeIndex].final_tx_ts);
 
                             int16_t frame_size = 0;
                             // 填充poll帧数据
@@ -186,10 +206,10 @@ void dw1000TagMain(void)
                             frame_size = create_final_frame(
                                 dw1000tx_buffer, sizeof(dw1000tx_buffer),
                                 local_device.seqNum, local_device.pan_id,
-                                AnchorNode[0].short_addr, local_device.short_addr,
-                                AnchorNode[0].poll_tx_ts, AnchorNode[0].poll_rx_ts,
-                                AnchorNode[0].resp_tx_ts, AnchorNode[0].resp_rx_ts,
-                                AnchorNode[0].final_tx_ts);
+                                AnchorNode[NodeIndex].short_addr, local_device.short_addr,
+                                AnchorNode[NodeIndex].poll_tx_ts, AnchorNode[NodeIndex].poll_rx_ts,
+                                AnchorNode[NodeIndex].resp_tx_ts, AnchorNode[NodeIndex].resp_rx_ts,
+                                AnchorNode[NodeIndex].final_tx_ts);
 
                             dwt_writetxdata(frame_size, dw1000tx_buffer, 0);
                             dwt_writetxfctrl(frame_size, 0);
@@ -256,36 +276,36 @@ void dw1000TagMain(void)
                         if (!parse_disdata_frame(dw1000rx_buffer, frame_len,
                                                  &received_disdata_msg)) {
 
-                            mymemcopytimestamp(AnchorNode[0].poll_tx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].poll_tx_ts,
                                                received_disdata_msg.poll_tx_ts);
-                            mymemcopytimestamp(AnchorNode[0].poll_rx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].poll_rx_ts,
                                                received_disdata_msg.poll_rx_ts);
-                            mymemcopytimestamp(AnchorNode[0].resp_tx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].resp_tx_ts,
                                                received_disdata_msg.resp_tx_ts);
-                            mymemcopytimestamp(AnchorNode[0].resp_rx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].resp_rx_ts,
                                                received_disdata_msg.resp_rx_ts);
-                            mymemcopytimestamp(AnchorNode[0].final_tx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].final_tx_ts,
                                                received_disdata_msg.final_tx_ts);
-                            mymemcopytimestamp(AnchorNode[0].final_rx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].final_rx_ts,
                                                received_disdata_msg.final_rx_ts);
 
-                            AnchorNode_u64[0].poll_tx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].poll_tx_ts);
-                            AnchorNode_u64[0].poll_rx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].poll_rx_ts);
-                            AnchorNode_u64[0].resp_tx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].resp_tx_ts);
-                            AnchorNode_u64[0].resp_rx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].resp_rx_ts);
-                            AnchorNode_u64[0].final_tx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].final_tx_ts);
-                            AnchorNode_u64[0].final_rx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].final_rx_ts);
+                            AnchorNode_u64[NodeIndex].poll_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].poll_tx_ts);
+                            AnchorNode_u64[NodeIndex].poll_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].poll_rx_ts);
+                            AnchorNode_u64[NodeIndex].resp_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].resp_tx_ts);
+                            AnchorNode_u64[NodeIndex].resp_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].resp_rx_ts);
+                            AnchorNode_u64[NodeIndex].final_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].final_tx_ts);
+                            AnchorNode_u64[NodeIndex].final_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].final_rx_ts);
 
                             twr_distance = calculate_distance_from_timestamps(
-                                AnchorNode_u64[0].poll_tx_ts, AnchorNode_u64[0].resp_rx_ts,
-                                AnchorNode_u64[0].final_tx_ts, AnchorNode_u64[0].poll_rx_ts,
-                                AnchorNode_u64[0].resp_tx_ts, AnchorNode_u64[0].final_rx_ts);
+                                AnchorNode_u64[NodeIndex].poll_tx_ts, AnchorNode_u64[NodeIndex].resp_rx_ts,
+                                AnchorNode_u64[NodeIndex].final_tx_ts, AnchorNode_u64[NodeIndex].poll_rx_ts,
+                                AnchorNode_u64[NodeIndex].resp_tx_ts, AnchorNode_u64[NodeIndex].final_rx_ts);
 
                             printf("distance : %f\r\n", twr_distance);
 
@@ -346,19 +366,19 @@ void dw1000AnchorMain(void)
                         if (!parse_poll_frame(dw1000rx_buffer, frame_len,
                                               &received_poll_msg)) { // 解析poll帧数据
 
-                            clear_node_profile(&AnchorNode[0]); // 清空节点的数据，保证不会有什么东西的干扰
+                            clear_node_profile(&AnchorNode[NodeIndex]); // 清空节点的数据，保证不会有什么东西的干扰
 
                             mymemcopytimestamp(
-                                AnchorNode[0].poll_rx_ts,
+                                AnchorNode[NodeIndex].poll_rx_ts,
                                 isr_timestamp_packet
                                     .rxtimestamp); // 拷贝数据到节点中 ，接收到poll数据之后，这个时间点的实际戳进行保存
 
                             uint64_t transmitDelayTimetick; // 计算延时之后的发送时间
 
                             transmitDelayTimetick = transmitDelayTime(
-                                u8_5byte_TO_u64(AnchorNode[0].poll_rx_ts), 5); // 5ms延时之后发送数据，计算延时时候的发送时间
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].poll_rx_ts), 5); // 5ms延时之后发送数据，计算延时时候的发送时间
 
-                            u64_TO_u8_5byte(transmitDelayTimetick, AnchorNode[0].resp_tx_ts); // 低9位直接忽略，在函数中实现
+                            u64_TO_u8_5byte(transmitDelayTimetick, AnchorNode[NodeIndex].resp_tx_ts); // 低9位直接忽略，在函数中实现
 
                             dwt_setdelayedtrxtime((uint32_t)(transmitDelayTimetick >> 8)); // 这里是因为函数写入只写入高4个字节，所以右移8位
 
@@ -372,7 +392,7 @@ void dw1000AnchorMain(void)
                                 dw1000tx_buffer, sizeof(dw1000tx_buffer),
                                 received_poll_msg.sequence_num, local_device.pan_id,
                                 dest_addrtemp, local_device.short_addr,
-                                AnchorNode[0].poll_rx_ts, AnchorNode[0].resp_tx_ts); // 创建数据
+                                AnchorNode[NodeIndex].poll_rx_ts, AnchorNode[NodeIndex].resp_tx_ts); // 创建数据
 
                             dwt_writetxdata(frame_size, dw1000tx_buffer, 0); // 设置发送的数据信息
                             dwt_writetxfctrl(frame_size, 0);                 // 发送数据的控制信息
@@ -455,45 +475,45 @@ void dw1000AnchorMain(void)
 
                             // 解析结果表示确实是final帧，否则直接复位状态机
                             // 这里是直接将数据拷贝到数据mac数据表中
-                            mymemcopytimestamp(AnchorNode[0].poll_tx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].poll_tx_ts,
                                                received_final_msg.poll_tx_ts);
-                            mymemcopytimestamp(AnchorNode[0].poll_rx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].poll_rx_ts,
                                                received_final_msg.poll_rx_ts);
-                            mymemcopytimestamp(AnchorNode[0].resp_tx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].resp_tx_ts,
                                                received_final_msg.resp_tx_ts);
-                            mymemcopytimestamp(AnchorNode[0].resp_rx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].resp_rx_ts,
                                                received_final_msg.resp_rx_ts);
-                            mymemcopytimestamp(AnchorNode[0].final_tx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].final_tx_ts,
                                                received_final_msg.final_tx_ts);
-                            mymemcopytimestamp(AnchorNode[0].final_rx_ts,
+                            mymemcopytimestamp(AnchorNode[NodeIndex].final_rx_ts,
                                                isr_timestamp_packet.rxtimestamp); // 读取时间戳的全局变量
 
                             uint64_t transmitDelayTimetick; // 计算延时之后的发送时间
                             transmitDelayTimetick = transmitDelayTime(
-                                u8_5byte_TO_u64(AnchorNode[0].final_rx_ts), 5); // 延时5ms ，用来设置延时发送的时间
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].final_rx_ts), 5); // 延时5ms ，用来设置延时发送的时间
 
                             dwt_setdelayedtrxtime((uint32_t)(transmitDelayTimetick >> 8)); // 低位直接忽略
 
                             // 用来计算最终数据，用于计算最后的dis参数
                             AnchorNode_u64->short_addr = local_device.short_addr; // 地址赋值
 
-                            AnchorNode_u64[0].poll_tx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].poll_tx_ts);
-                            AnchorNode_u64[0].poll_rx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].poll_rx_ts);
-                            AnchorNode_u64[0].resp_tx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].resp_tx_ts);
-                            AnchorNode_u64[0].resp_rx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].resp_rx_ts);
-                            AnchorNode_u64[0].final_tx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].final_tx_ts);
-                            AnchorNode_u64[0].final_rx_ts =
-                                u8_5byte_TO_u64(AnchorNode[0].final_rx_ts);
+                            AnchorNode_u64[NodeIndex].poll_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].poll_tx_ts);
+                            AnchorNode_u64[NodeIndex].poll_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].poll_rx_ts);
+                            AnchorNode_u64[NodeIndex].resp_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].resp_tx_ts);
+                            AnchorNode_u64[NodeIndex].resp_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].resp_rx_ts);
+                            AnchorNode_u64[NodeIndex].final_tx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].final_tx_ts);
+                            AnchorNode_u64[NodeIndex].final_rx_ts =
+                                u8_5byte_TO_u64(AnchorNode[NodeIndex].final_rx_ts);
 
                             twr_distance = calculate_distance_from_timestamps(
-                                AnchorNode_u64[0].poll_tx_ts, AnchorNode_u64[0].resp_rx_ts,
-                                AnchorNode_u64[0].final_tx_ts, AnchorNode_u64[0].poll_rx_ts,
-                                AnchorNode_u64[0].resp_tx_ts, AnchorNode_u64[0].final_rx_ts);
+                                AnchorNode_u64[NodeIndex].poll_tx_ts, AnchorNode_u64[NodeIndex].resp_rx_ts,
+                                AnchorNode_u64[NodeIndex].final_tx_ts, AnchorNode_u64[NodeIndex].poll_rx_ts,
+                                AnchorNode_u64[NodeIndex].resp_tx_ts, AnchorNode_u64[NodeIndex].final_rx_ts);
 
                             printf("distance : %f\r\n", twr_distance);
 
@@ -507,9 +527,9 @@ void dw1000AnchorMain(void)
                                 dw1000tx_buffer, sizeof(dw1000tx_buffer),
                                 received_final_msg.sequence_num, local_device.pan_id,
                                 dest_addrtemp, local_device.short_addr,
-                                AnchorNode[0].poll_tx_ts, AnchorNode[0].poll_rx_ts,
-                                AnchorNode[0].resp_tx_ts, AnchorNode[0].resp_rx_ts,
-                                AnchorNode[0].final_tx_ts, AnchorNode[0].final_rx_ts);
+                                AnchorNode[NodeIndex].poll_tx_ts, AnchorNode[NodeIndex].poll_rx_ts,
+                                AnchorNode[NodeIndex].resp_tx_ts, AnchorNode[NodeIndex].resp_rx_ts,
+                                AnchorNode[NodeIndex].final_tx_ts, AnchorNode[NodeIndex].final_rx_ts);
 
                             dwt_writetxdata(frame_size, dw1000tx_buffer, 0);
 
@@ -584,7 +604,7 @@ void DW1000samplingtask(void *argument)
     UWBMssageInit();                 // 初始化message数据，这个数据是直接从flash中读取的数据，包含本地的数据
     BPhero_UWB_Init();               // dwm1000 init related
 
-    dw1000TagMain();
+    // dw1000TagMain();
     dw1000AnchorMain();
 }
 
@@ -811,7 +831,7 @@ void reset_tag_state_machine(Tag_State_t *current_tag_state)
 
     // 6. （可选）清除与特定 TWR 交换相关的内部数据
     //    例如，清除存储的时间戳等 (如果 clear_node_profile 做这个事情)
-    // clear_node_profile(&AnchorNode[0]); // 根据需要在 IDLE 状态开始时调用，或此处
+    // clear_node_profile(&AnchorNode[NodeIndex]); // 根据需要在 IDLE 状态开始时调用，或此处
 
     // 7. 重新启用必要的 DW1000 中断
     //    需要根据您的应用启用哪些中断源
@@ -918,4 +938,105 @@ void UWBMssageInit(void)
     } else {
         printf("Read operation failed after write.\r\n");
     }
+}
+
+#define SYS_CFG_ID        0x04 // System Configuration Register ID
+#define TX_POWER_ID       0x1E // Transmit Power Control Register ID
+
+#define SYS_CFG_OFFSET    0x00 // Offset for SYS_CFG within its file
+#define TX_POWER_OFFSET   0x00 // Offset for TX_POWER within its file
+
+#define DIS_STXP_BIT_MASK (1UL << 18) // Bit 18 for DIS_STXP in SYS_CFG
+
+// --- PRF 定义 ---
+#define PRF_16_MHZ 1
+#define PRF_64_MHZ 2
+
+int configure_manual_max_tx_power(uint8_t channel, uint8_t prf)
+{
+    uint32_t tx_power_value = 0;
+    uint32_t sys_cfg_val    = 0;
+    int status              = 0;
+
+    // --- 1. 选择参考功率值 (根据 Table 20)  ---
+    //    注意：这些值假设 TXPOWPHR 和 TXPOWSD 设置相同
+    if (prf == PRF_16_MHZ) {
+        switch (channel) {
+            case 1: // Fallthrough
+            case 2:
+                tx_power_value = 0x75757575; //
+                break;
+            case 3:
+                tx_power_value = 0x6F6F6F6F; //
+                break;
+            case 4:
+                tx_power_value = 0x5F5F5F5F; //
+                break;
+            case 5:
+                tx_power_value = 0x48484848; //
+                break;
+            case 7:
+                tx_power_value = 0x92929292; //
+                break;
+            default:
+                // 不支持的通道
+                return -1;
+        }
+    } else if (prf == PRF_64_MHZ) {
+        switch (channel) {
+            case 1: // Fallthrough
+            case 2:
+                tx_power_value = 0x67676767; //
+                break;
+            case 3:
+                tx_power_value = 0x8B8B8B8B; //
+                break;
+            case 4:
+                tx_power_value = 0x9A9A9A9A; //
+                break;
+            case 5:
+                tx_power_value = 0x85858585; //
+                break;
+            case 7:
+                tx_power_value = 0xD1D1D1D1; //
+                break;
+            default:
+                // 不支持的通道
+                return -1;
+        }
+    } else {
+        // 不支持的 PRF
+        return -2;
+    }
+
+    // --- 2. 禁用 Smart TX Power Control (设置 DIS_STXP = 1) ---
+    // 读取当前的 SYS_CFG 寄存器值
+    sys_cfg_val = dwt_read32bitreg(SYS_CFG_ID); // 假设函数读取整个 32 位寄存器
+
+    // 设置 DIS_STXP 位 (Bit 18)
+    sys_cfg_val |= DIS_STXP_BIT_MASK; //
+
+    // 写回修改后的 SYS_CFG 寄存器值
+    status = dwt_writetodevice(SYS_CFG_ID, SYS_CFG_OFFSET, 4, (uint8_t *)&sys_cfg_val);
+    if (status != 0) {
+        return -3; // 写入 SYS_CFG 失败
+    }
+
+    // --- 3. 写入选定的功率值到 TX_POWER (0x1E) 寄存器 ---
+    status = dwt_writetodevice(TX_POWER_ID, TX_POWER_OFFSET, 4, (uint8_t *)&tx_power_value);
+    if (status != 0) {
+        return -4; // 写入 TX_POWER 失败
+    }
+
+    // --- 4. (重要) 确保其他相关发射器配置也已正确设置 ---
+    //    例如: Channel Control (0x1F), RF_TXCTRL (0x28:0C), TC_PGDELAY (0x2A:0B) 等
+    //    这些设置取决于所选的通道和PRF，并且对于合规性和性能至关重要。
+    //    请参考手册的相关章节 (例如 7.2.32, 7.2.41.5, 7.2.43.6) 进行设置。
+    //    例如，对于 Channel 5 / 16 MHz PRF，您还需要设置：
+    //    dwt_writetodevice(CHAN_CTRL_ID, 0, 4, &chan_ctrl_val_ch5_16mhz);
+    //    dwt_writetodevice(RF_CONF_ID, RF_TXCTRL_OFFSET, 3, &rf_txctrl_val_ch5);
+    //    dwt_writetodevice(TX_CAL_ID, TC_PGDELAY_OFFSET, 1, &tc_pgdelay_val_ch5);
+    //    (这里的变量和 ID 需要根据您的代码定义)
+
+    return 0; // 成功
 }

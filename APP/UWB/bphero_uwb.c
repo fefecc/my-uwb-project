@@ -74,6 +74,8 @@ void BPhero_UWB_Init(void) // dwm1000 init related
 
     dwt_setaddress16(local_device.short_addr);
 
+    configure_manual_max_tx_power(config.chan, config.prf);
+
     // #ifdef RX_Main
     //     dwt_setaddress16(SHORT_ADDR + 1); // 设置uwb接受测试 16位短地址
     // #endif

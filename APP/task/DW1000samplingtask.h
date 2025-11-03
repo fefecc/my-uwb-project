@@ -101,5 +101,6 @@ double calculate_distance_from_timestamps(uint64_t tag_poll_tx_ts,
                                           uint64_t anchor_resp_tx_ts,
                                           uint64_t anchor_final_rx_ts);
 void UWBMssageInit(void);
+int configure_manual_max_tx_power(uint8_t channel, uint8_t prf);
 
 #endif

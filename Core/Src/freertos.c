@@ -166,18 +166,18 @@ void MX_FREERTOS_Init(void)
     /* creation of defaultTask */
     defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-    // /* creation of IMU */
-    // IMUHandle = osThreadNew(IMUTask, NULL, &IMU_attributes);
+    /* creation of IMU */
+    //   IMUHandle = osThreadNew(IMUTask, NULL, &IMU_attributes);
 
     /* creation of SDMMC */
-    SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
+    //   SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
 
     /* creation of GNSS */
     // GNSSHandle = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
 
     /* USER CODE BEGIN RTOS_THREADS */
     /* add threads, ... */
-    IMUDealHandle            = osThreadNew(IMUDataDealTask, NULL, &IMuUDeal_attributes);
+    //  IMUDealHandle            = osThreadNew(IMUDataDealTask, NULL, &IMuUDeal_attributes);
     InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
     dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
     /* USER CODE END RTOS_THREADS */
