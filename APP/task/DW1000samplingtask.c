@@ -87,13 +87,6 @@ uwb_node_profile_t AnchorNode[MaxAnchorNum] = {{
                                                    .final_rx_ts = {0},
                                                }};
 
-// dw1000_local_device_t local_device =
-//     {.frameCtrl[0] = 0x41,
-//      .frameCtrl[1] = 0x88,
-//      .seqNum       = 0,
-//      .pan_id       = 0xf0f0,
-//      .short_addr   = 0x0032};
-
 dw1000_local_device_t local_device = {.frameCtrl[0] = 0x41, .frameCtrl[1] = 0x88, .seqNum = 0, .pan_id = 0xf0f0, .short_addr = 0x0032};
 
 static uint8_t dw1000tx_buffer[FRAME_LEN_MAX]; // 发送数据
