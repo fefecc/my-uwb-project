@@ -339,8 +339,10 @@ void dw1000AnchorMain(void)
                 if (xTaskNotifyWait(0x00,       /* 进入时不清除所有通知位 */
                                     UINT32_MAX, /* 退出时清除所有通知位 */
                                     &notified_value, pdMS_TO_TICKS(3000)) == pdTRUE) {
-                    // 检测isr给出的中断标志，使用位掩码给出，用来检测中断事件
 
+                    // 检测isr给出的中断标志，使用位掩码给出，用来检测中断事件
+                    // 虽然上面会在3s强制重启，但是实际上想要运行到这个地方 需要中断发出信号，
+                    // 所以实际上需要计算中断接收超时的时间，这个时间大概是16s左右，这个led才会发生反转
                     HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
 
                     if (notified_value & UWB_EVENT_RX_DONE) { // 接收成功事件

@@ -32,6 +32,8 @@
 #include "queue.h"
 #include "stdio.h"
 #include "DW1000samplingtask.h"
+#include "sdmmc.h"
+#include "fatfs.h"
 
 /* USER CODE END Includes */
 
@@ -167,13 +169,13 @@ void MX_FREERTOS_Init(void)
     defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
     /* creation of IMU */
-    //   IMUHandle = osThreadNew(IMUTask, NULL, &IMU_attributes);
+    IMUHandle = osThreadNew(IMUTask, NULL, &IMU_attributes);
 
     /* creation of SDMMC */
-    //   SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
+    SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
 
     /* creation of GNSS */
-    // GNSSHandle = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
+    GNSSHandle = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
 
     /* USER CODE BEGIN RTOS_THREADS */
     /* add threads, ... */
@@ -235,8 +237,15 @@ void SDMMCTask(void *argument)
 {
     /* USER CODE BEGIN SDMMCTask */
     /* Infinite loop */
-    FatFs_Check();
-    SDCardTaskFunc();
+    // 直接检测sd卡是否插上，如果没有不初始化，进入死循环,如果检测到插上则直接开始初始化，执行写入的代码
+    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5) == GPIO_PIN_RESET) {
+        // 初始化SD卡，和数据流
+        MX_SDMMC1_SD_Init();
+        MX_FATFS_Init();
+        osDelay(5);
+        FatFs_Check();
+        SDCardTaskFunc();
+    }
     // FatFs_FileTest();
     // sd_wirte_IMU();
 

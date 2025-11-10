@@ -22,7 +22,6 @@
 #include "dma.h"
 #include "fatfs.h"
 #include "i2c.h"
-#include "sdmmc.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -103,8 +102,6 @@ int main(void)
     MX_DMA_Init();
     MX_SPI1_Init();
     MX_USART1_UART_Init();
-    //   MX_SDMMC1_SD_Init();
-    //   MX_FATFS_Init();
     MX_TIM16_Init();
     MX_USART3_UART_Init();
     MX_UART4_Init();
