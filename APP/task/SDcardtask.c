@@ -15,8 +15,8 @@
 #define SDLength     512
 #define SDPoolLength SDLength * 2
 
-#define SDLEDGPIOx   GPIOE
-#define SDLEDPINx    GPIO_PIN_4
+#define SDLEDGPIOx   LED0_GPIO_Port
+#define SDLEDPINx    LED0_Pin
 
 //	函数：FatFs_Check
 //	功能：进行FatFs文件系统的挂载

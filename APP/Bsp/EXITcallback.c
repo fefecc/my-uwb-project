@@ -26,7 +26,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
     }
 
-    else if (GPIO_Pin == GPIO_PIN_2) {
+    else if (GPIO_Pin == USER_KEY_Pin) {
         printf("key\r\n");
 
     }

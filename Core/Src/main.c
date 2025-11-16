@@ -31,6 +31,8 @@
 /* USER CODE BEGIN Includes */
 #include "timestamptask.h"
 #include "stdio.h"
+#include "app_log.h"
+#include "app_config.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -59,12 +61,87 @@ void SystemClock_Config(void);
 void PeriphCommonClock_Config(void);
 void MX_FREERTOS_Init(void);
 /* USER CODE BEGIN PFP */
-
+static bool App_IsBootKeyPressed(void);
+static void App_RunBootloaderMode(void);
+static void App_PrintCurrentConfig(void);
+static void App_StreamConfigSnapshot(const char *source_tag);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static bool App_IsBootKeyPressed(void)
+{
+    // 读取用户按键状态，用于判断是否需要强制进入 Boot 配置模式
+    return HAL_GPIO_ReadPin(USER_KEY_GPIO_Port, USER_KEY_Pin) == GPIO_PIN_RESET;
+}
 
+// 打印当前的状态，显示数据
+static void App_PrintCurrentConfig(void)
+{
+    const app_config_t *cfg = AppConfig_Get();
+    if (cfg == NULL) {
+        log_error("Config cache not ready");
+        return;
+    }
+    AppConfig_Print(cfg); // 打印当前的状态
+}
+
+// 发送log信息流的函数
+static void App_StreamConfigSnapshot(const char *source_tag)
+{
+    const app_config_t *cfg = AppConfig_Get();
+    if (cfg == NULL) {
+        log_error("Config cache not ready, cannot emit snapshot");
+        return;
+    }
+
+    const char *role_str =
+        (cfg->device_role == APP_DEVICE_ROLE_ANCHOR) ? "Anchor" : "Tag";
+    log_info("[CFG][%s] role=%s(%u) PAN=0x%04X short=0x%04X frame=0x%02X%02X log=%lu",
+             (source_tag != NULL) ? source_tag : "AUTO", role_str, cfg->device_role,
+             cfg->pan_id, cfg->short_addr, cfg->frame_ctrl[0], cfg->frame_ctrl[1],
+             cfg->log_level);
+}
+
+static void App_RunBootloaderMode(void)
+{
+    log_warn("Bootloader key detected, entering configuration programming mode");
+
+    // 按下按键后先写入一份默认配置，保证后续串口交互有可用参数
+    if (AppConfig_SaveDefaults() != HAL_OK) {
+        log_error("Failed to persist default configuration");
+    } else {
+        log_info("Default configuration stored to flash");
+    }
+    App_PrintCurrentConfig();
+    App_StreamConfigSnapshot("BOOT");
+
+    const uint32_t cfg_emit_period_ms = 1000U;
+    uint32_t next_emit_tick           = HAL_GetTick() + cfg_emit_period_ms;
+
+    while (1) {
+        uint32_t now = HAL_GetTick();
+
+        if ((int32_t)(now - next_emit_tick) >= 0) {
+            App_StreamConfigSnapshot("TIMER");
+            next_emit_tick = now + cfg_emit_period_ms;
+        }
+
+        if (App_IsBootKeyPressed()) {
+            HAL_Delay(50);
+            if (App_IsBootKeyPressed()) {
+                log_info("Key press detected, sending configuration snapshot");
+                App_StreamConfigSnapshot("BUTTON");
+                // 阻塞在此直到松开按键，防止多次触发
+                while (App_IsBootKeyPressed()) {
+                    HAL_Delay(10);
+                }
+                next_emit_tick = HAL_GetTick() + cfg_emit_period_ms;
+            }
+        }
+        HAL_Delay(10);
+    }
+}
 /* USER CODE END 0 */
 
 /**
@@ -108,6 +185,21 @@ int main(void)
     MX_SPI2_Init();
     MX_I2C1_Init();
     /* USER CODE BEGIN 2 */
+    // 开机时优先检查按键，若按住则直接进入配置烧写循环
+    if (App_IsBootKeyPressed()) {
+        // 这个地方是一个死循环，如果进入这个bootloader模式下会直接一直发送配置数据
+        App_RunBootloaderMode();
+    }
+
+    HAL_StatusTypeDef cfg_status = AppConfig_LoadFromFlash();
+    if (cfg_status != HAL_OK) {
+        // Flash 数据非法时回退到默认配置，并尝试重新写入
+        log_warn("Using built-in configuration defaults (status=%lu)", cfg_status);
+        if (AppConfig_SaveDefaults() != HAL_OK) {
+            log_error("Unable to save default configuration to flash");
+        }
+    }
+    App_PrintCurrentConfig();
 
     /* USER CODE END 2 */
 
@@ -284,10 +376,7 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 void Error_Handler(void)
 {
     /* USER CODE BEGIN Error_Handler_Debug */
-    /* User can add his own implementation to report the HAL error return state */
-    __disable_irq();
-    while (1) {
-    }
+    log_error("Error_Handler invoked");
     /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT

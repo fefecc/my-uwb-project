@@ -5,8 +5,8 @@
 #include "stdio.h"
 #include "stm32h7xx_hal_dma.h"
 
-#define gnss_parser_LEDGPIOx GPIOE
-#define gnss_parser_LEDGPINx GPIO_PIN_5
+#define gnss_parser_LEDGPIOx LED1_GPIO_Port
+#define gnss_parser_LEDGPINx LED1_Pin
 
 extern DMA_HandleTypeDef hdma_usart3_rx;
 #define GNSSUSART_RX hdma_usart3_rx

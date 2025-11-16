@@ -13,6 +13,8 @@
 #include "stdint.h"
 #include "inttypes.h"
 #include "doubleTOchar.h"
+#include "app_config.h"
+#include "app_log.h"
 
 // 这个用来判断帧的类型
 typedef enum {
@@ -108,7 +110,7 @@ void dw1000TagMain(void)
         switch (g_current_tag_state) {
             case TAG_STATE_IDLE: {
                 osDelay(1000);                         // 定时1s左右发一次数据
-                HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_6); // 指示灯，表示重新发送了一个数据栈
+                HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin); // 指示灯，表示重新发送了一个数据栈
 
                 clear_node_profile(&AnchorNode[NodeIndex]); // 清空tag机的节点数据
 
@@ -343,7 +345,7 @@ void dw1000AnchorMain(void)
                     // 检测isr给出的中断标志，使用位掩码给出，用来检测中断事件
                     // 虽然上面会在3s强制重启，但是实际上想要运行到这个地方 需要中断发出信号，
                     // 所以实际上需要计算中断接收超时的时间，这个时间大概是16s左右，这个led才会发生反转
-                    HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+                    HAL_GPIO_TogglePin(LED3_GPIO_Port, LED3_Pin);
 
                     if (notified_value & UWB_EVENT_RX_DONE) { // 接收成功事件
                         uint16_t frame_len =
@@ -920,19 +922,17 @@ HAL_StatusTypeDef M24C64_Read(uint16_t memAddr, uint8_t *pData, uint16_t size)
 
 void UWBMssageInit(void)
 {
-    dw1000_local_flashData_t config_read_back;
-    HAL_StatusTypeDef read_status;
-
-    read_status = M24C64_Read(CONFIG_EEPROM_ADDRESS, (uint8_t *)&config_read_back, sizeof(dw1000_local_device_t));
-    if (read_status == HAL_OK) {
-        // 更新数据
-        local_device.frameCtrl[0] = config_read_back.frameCtrl[0];
-        local_device.frameCtrl[1] = config_read_back.frameCtrl[1];
-        local_device.pan_id       = config_read_back.pan_id;
-        local_device.short_addr   = config_read_back.short_addr;
-    } else {
-        printf("Read operation failed after write.\r\n");
+    const app_config_t *cfg = AppConfig_Get();
+    if (cfg == NULL) {
+        log_error("AppConfig unavailable, keeping compile-time DW1000 identity");
+        return;
     }
+
+    local_device.frameCtrl[0] = cfg->frame_ctrl[0];
+    local_device.frameCtrl[1] = cfg->frame_ctrl[1];
+    local_device.pan_id       = cfg->pan_id;
+    local_device.short_addr   = cfg->short_addr;
+    log_info("DW1000 identity updated (PAN=0x%04X, short=0x%04X)", local_device.pan_id, local_device.short_addr);
 }
 
 #define SYS_CFG_ID        0x04 // System Configuration Register ID
