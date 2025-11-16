@@ -21,7 +21,9 @@ typedef struct {
     uint8_t device_role;   // 0 = Tag, 1 = Anchor
     uint8_t reserved0[1];  // Alignment padding / future use
     uint32_t log_level;    // Preferred runtime log verbosity
-    uint32_t reserved[6];  // Reserved for future extensions
+    float anchor_pos_x;    // Anchor X coordinate (meters)
+    float anchor_pos_y;    // Anchor Y coordinate (meters)
+    uint32_t reserved[4];  // Reserved for future extensions
 } app_config_t;
 
 HAL_StatusTypeDef AppConfig_LoadFromFlash(void);

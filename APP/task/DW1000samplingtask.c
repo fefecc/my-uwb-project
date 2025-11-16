@@ -103,6 +103,9 @@ static uint16_t NodeIndex = 0;
 
 QueueHandle_t dw1000data_queue = NULL;
 
+static float g_anchor_pos_x = 0.0f;
+static float g_anchor_pos_y = 0.0f;
+
 void dw1000TagMain(void)
 {
 
@@ -283,6 +286,8 @@ void dw1000TagMain(void)
                                                received_disdata_msg.final_tx_ts);
                             mymemcopytimestamp(AnchorNode[NodeIndex].final_rx_ts,
                                                received_disdata_msg.final_rx_ts);
+                            AnchorNode[NodeIndex].anchor_pos_x = received_disdata_msg.anchor_pos_x;
+                            AnchorNode[NodeIndex].anchor_pos_y = received_disdata_msg.anchor_pos_y;
 
                             AnchorNode_u64[NodeIndex].poll_tx_ts =
                                 u8_5byte_TO_u64(AnchorNode[NodeIndex].poll_tx_ts);
@@ -526,7 +531,8 @@ void dw1000AnchorMain(void)
                                 dest_addrtemp, local_device.short_addr,
                                 AnchorNode[NodeIndex].poll_tx_ts, AnchorNode[NodeIndex].poll_rx_ts,
                                 AnchorNode[NodeIndex].resp_tx_ts, AnchorNode[NodeIndex].resp_rx_ts,
-                                AnchorNode[NodeIndex].final_tx_ts, AnchorNode[NodeIndex].final_rx_ts);
+                                AnchorNode[NodeIndex].final_tx_ts, AnchorNode[NodeIndex].final_rx_ts,
+                                g_anchor_pos_x, g_anchor_pos_y);
 
                             dwt_writetxdata(frame_size, dw1000tx_buffer, 0);
 
@@ -932,6 +938,8 @@ void UWBMssageInit(void)
     local_device.frameCtrl[1] = cfg->frame_ctrl[1];
     local_device.pan_id       = cfg->pan_id;
     local_device.short_addr   = cfg->short_addr;
+    g_anchor_pos_x            = cfg->anchor_pos_x;
+    g_anchor_pos_y            = cfg->anchor_pos_y;
     log_info("DW1000 identity updated (PAN=0x%04X, short=0x%04X)", local_device.pan_id, local_device.short_addr);
 }
 

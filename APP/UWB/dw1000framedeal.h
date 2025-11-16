@@ -92,7 +92,7 @@ int16_t create_disdata_frame(
     uint16_t dest_addr, uint16_t source_addr, const uint8_t *poll_tx_ts,
     const uint8_t *poll_rx_ts, const uint8_t *resp_tx_ts,
     const uint8_t *resp_rx_ts, const uint8_t *final_tx_ts,
-    const uint8_t *final_rx_ts);
+    const uint8_t *final_rx_ts, float anchor_pos_x, float anchor_pos_y);
 int16_t parse_disdata_frame(const uint8_t *buffer, uint16_t length,
                             twr_disdata_msg_t *parsed_msg);
 

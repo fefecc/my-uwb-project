@@ -51,6 +51,9 @@ typedef struct {
     /** @brief 本设备接收 Final 帧的 40 位接收时间戳。 (由 Anchor 记录) */
     uint8_t final_rx_ts[5];
 
+    float anchor_pos_x;
+    float anchor_pos_y;
+
 } uwb_node_profile_t;
 
 typedef struct {

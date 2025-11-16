@@ -6,7 +6,7 @@
 #include "stm32h7xx_hal_flash_ex.h"
 
 #define APP_CONFIG_MAGIC        (0x43464731UL)
-#define APP_CONFIG_VERSION      (0x00010002UL)
+#define APP_CONFIG_VERSION      (0x00010003UL)
 
 #define APP_CONFIG_FLASH_BANK   FLASH_BANK_1
 #define APP_CONFIG_FLASH_SECTOR FLASH_SECTOR_7
@@ -14,16 +14,18 @@
 #define APP_CONFIG_FLASH_WORD   (32U)
 
 static const app_config_t g_app_config_defaults = {
-    .magic       = APP_CONFIG_MAGIC,
-    .version     = APP_CONFIG_VERSION,
-    .length      = sizeof(app_config_t),
-    .pan_id      = 0xF0F0,
-    .short_addr  = 0x0032,
-    .frame_ctrl  = {0x41, 0x88},
-    .device_role = APP_DEVICE_ROLE_ANCHOR,
-    .reserved0   = {0},
-    .log_level   = LOG_LEVEL_INFO,
-    .reserved    = {0},
+    .magic        = APP_CONFIG_MAGIC,
+    .version      = APP_CONFIG_VERSION,
+    .length       = sizeof(app_config_t),
+    .pan_id       = 0xF0F0,
+    .short_addr   = 0x0032,
+    .frame_ctrl   = {0x41, 0x88},
+    .device_role  = APP_DEVICE_ROLE_ANCHOR,
+    .reserved0    = {0},
+    .log_level    = LOG_LEVEL_INFO,
+    .anchor_pos_x = 0.0f,
+    .anchor_pos_y = 0.0f,
+    .reserved     = {0},
 };
 
 static app_config_t g_cached_config;
@@ -180,5 +182,6 @@ void AppConfig_Print(const app_config_t *cfg)
     log_info(" - Device Role: %s (%u)",
              (cfg->device_role == APP_DEVICE_ROLE_ANCHOR) ? "Anchor" : "Tag",
              cfg->device_role);
+    log_info(" - Anchor Position: (%.3f, %.3f)", cfg->anchor_pos_x, cfg->anchor_pos_y);
     log_info(" - Log level: %lu", cfg->log_level);
 }

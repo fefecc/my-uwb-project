@@ -249,7 +249,8 @@ int16_t create_disdata_frame(uint8_t *buffer, size_t buffer_size,
                              uint16_t dest_addr, uint16_t source_addr,
                              const uint8_t *poll_tx_ts, const uint8_t *poll_rx_ts,
                              const uint8_t *resp_tx_ts, const uint8_t *resp_rx_ts,
-                             const uint8_t *final_tx_ts, const uint8_t *final_rx_ts)
+                             const uint8_t *final_tx_ts, const uint8_t *final_rx_ts,
+                             float anchor_pos_x, float anchor_pos_y)
 {
     const size_t frame_size = sizeof(twr_disdata_msg_t);
 
@@ -286,6 +287,8 @@ int16_t create_disdata_frame(uint8_t *buffer, size_t buffer_size,
     memcpy(disdata_msg->resp_rx_ts, resp_rx_ts, 5);
     memcpy(disdata_msg->final_tx_ts, final_tx_ts, 5);
     memcpy(disdata_msg->final_rx_ts, final_rx_ts, 5);
+    disdata_msg->anchor_pos_x = anchor_pos_x;
+    disdata_msg->anchor_pos_y = anchor_pos_y;
 
     // 5. 返回生成的帧的实际长度
     return (int16_t)frame_size;

@@ -103,6 +103,8 @@ typedef struct {
     uint8_t resp_rx_ts[5];  // resp接收时间戳
     uint8_t final_tx_ts[5]; // final发送时间戳
     uint8_t final_rx_ts[5]; // final接收时间戳
+    float anchor_pos_x;     // Anchor X 坐标（米）
+    float anchor_pos_y;     // Anchor Y 坐标（米）
     uint8_t FCS[2];
 } PACKED twr_disdata_msg_t;
 

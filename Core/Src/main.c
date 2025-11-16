@@ -97,10 +97,10 @@ static void App_StreamConfigSnapshot(const char *source_tag)
 
     const char *role_str =
         (cfg->device_role == APP_DEVICE_ROLE_ANCHOR) ? "Anchor" : "Tag";
-    log_info("[CFG][%s] role=%s(%u) PAN=0x%04X short=0x%04X frame=0x%02X%02X log=%lu",
+    log_info("[CFG][%s] role=%s(%u) PAN=0x%04X short=0x%04X frame=0x%02X%02X pos=(%.2f,%.2f) log=%lu",
              (source_tag != NULL) ? source_tag : "AUTO", role_str, cfg->device_role,
              cfg->pan_id, cfg->short_addr, cfg->frame_ctrl[0], cfg->frame_ctrl[1],
-             cfg->log_level);
+             cfg->anchor_pos_x, cfg->anchor_pos_y, cfg->log_level);
 }
 
 static void App_RunBootloaderMode(void)
