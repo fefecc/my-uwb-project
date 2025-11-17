@@ -7,13 +7,13 @@
 #include "queue.h"
 
 #include "bphero_uwb.h"
+#include "uwb_timestamp.h"
 
 // 定义邮箱结构体
 // 这个结构用来记录时间戳
 typedef struct {
-    uint8_t rxtimestamp[5];
-    uint8_t txtimestamp[5];
-
+    uwb_timestamp_t rx;
+    uwb_timestamp_t tx;
 } isr_timestamp_packet_t;
 
 // 来自中断的事件通知 (使用位掩码)
