@@ -2,7 +2,8 @@
 #define BPHERO_UWB_H
 
 #include "frame_header.h"
-
+#include "deca_device_api.h"
+#include "main.h"
 
 #define ADDR1
 // #define ADDR2
@@ -37,6 +38,7 @@ extern uint8 rx_buffer[FRAME_LEN_MAX];
 extern uint16 frame_len;
 void BPhero_UWB_Message_Init(void);
 void BPhero_UWB_Init(void); // dwm1000 init related
+void BPhero_UWB_InitWithProfile(const dwt_config_t *config, uint16_t pan_id, uint16_t short_addr);
 void bphero_setcallbacks(void (*rxcallback)(void));
 
 #endif

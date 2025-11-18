@@ -32,7 +32,11 @@ static int uwb_frame_write_timestamp(uint8_t *dst, const uwb_timestamp_t *ts)
     if (dst == NULL || ts == NULL) {
         return -1;
     }
-    memcpy(dst, ts->bytes, sizeof(ts->bytes));
+    uint64_t value = ts->value & ((1ULL << 40U) - 1ULL);
+    for (size_t i = 0; i < sizeof(ts->bytes); ++i) {
+        dst[i] = (uint8_t)(value & 0xFFU);
+        value >>= 8;
+    }
     return sizeof(ts->bytes);
 }
 
@@ -41,8 +45,13 @@ static int uwb_frame_read_timestamp(uwb_timestamp_t *ts, const uint8_t *src)
     if (ts == NULL || src == NULL) {
         return -1;
     }
+    uint64_t value = 0;
+    for (int i = sizeof(ts->bytes) - 1; i >= 0; --i) {
+        value <<= 8;
+        value |= src[i];
+    }
+    ts->value = value & ((1ULL << 40U) - 1ULL);
     memcpy(ts->bytes, src, sizeof(ts->bytes));
-    ts->value &= ((1ULL << 40U) - 1ULL);
     return sizeof(ts->bytes);
 }
 
@@ -75,7 +84,7 @@ int uwb_frame_encode(const uwb_frame_t *frame, uint8_t *buffer, size_t buffer_le
     if (frame == NULL || buffer == NULL) {
         return -1;
     }
-
+    // 长度
     size_t need_len = uwb_frame_length(frame);
     if (buffer_len < need_len) {
         return -1;
@@ -127,7 +136,7 @@ int uwb_frame_encode(const uwb_frame_t *frame, uint8_t *buffer, size_t buffer_le
     }
 
     memset(payload_ptr, 0, UWB_FRAME_FCS_LEN);
-    return (int)need_len;
+    return (int)need_len; // 返回的长度包含FCS的长度
 }
 
 int uwb_frame_decode(uwb_frame_t *frame, const uint8_t *buffer, size_t buffer_len)

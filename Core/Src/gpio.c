@@ -53,15 +53,14 @@ void MX_GPIO_Init(void)
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  // 先拉高 LED 输出，保证系统初始化期间保持灭灯状态
-  HAL_GPIO_WritePin(GPIOE, LED0_Pin|LED1_Pin|LED2_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOE, LED0_Pin|LED1_Pin|LED2_Pin|IO5_R_Pin
+                          |IO6_R_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  // LED3 与 PC4 复用在同一个端口，一并设置为默认高电平
   HAL_GPIO_WritePin(GPIOC, LED3_Pin|GPIO_PIN_4, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, IO5_R_Pin|IO6_R_Pin|GPIO_PIN_15, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_15, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
@@ -70,7 +69,6 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOD, GPIO_PIN_9, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : PE2 */
-  // 用户按键 (PE2) 使用上升沿中断，作为 Boot/配置模式入口
   GPIO_InitStruct.Pin = GPIO_PIN_2;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -136,7 +134,6 @@ void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  // 为外设输入与 DW1000 中断注册 NVIC，全部设为优先级 5 保证任务可抢占
   HAL_NVIC_SetPriority(EXTI0_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(EXTI0_IRQn);
 

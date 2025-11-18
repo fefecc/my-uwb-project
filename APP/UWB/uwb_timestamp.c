@@ -58,7 +58,7 @@ uwb_timestamp_t uwb_timestamp_add_delay_ms(const uwb_timestamp_t *base, uint16_t
     uint64_t base_val = uwb_timestamp_to_u64(base);
     double delay_units = ((double)delay_ms / 1000.0) / UWB_DWT_TIME_UNITS;
     uint64_t delay_ticks = (uint64_t)(delay_units);
-    uint64_t future      = (base_val + delay_ticks) & ((1ULL << 40) - 1ULL);
+    uint64_t future      = (base_val + delay_ticks) % (1ULL << 40);
 
     uwb_timestamp_from_u64(future, &result);
     return result;

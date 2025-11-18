@@ -34,22 +34,22 @@ typedef struct {
     uint16_t short_addr;
 
     /** @brief 本设备发送 Poll 帧的 40 位发送时间戳。 (由 Tag 记录) */
-    uint8_t poll_tx_ts[5];
+    uwb_timestamp_t poll_tx_ts;
 
     /** @brief 本设备接收 Poll 帧的 40 位接收时间戳。 (由 Anchor 记录) */
-    uint8_t poll_rx_ts[5];
+    uwb_timestamp_t poll_rx_ts;
 
     /** @brief 本设备发送 Response 帧的 40 位发送时间戳。(由 Anchor 记录/计算) */
-    uint8_t resp_tx_ts[5];
+    uwb_timestamp_t resp_tx_ts;
 
     /** @brief 本设备接收 Response 帧的 40 位接收时间戳。(由 Tag 记录) */
-    uint8_t resp_rx_ts[5];
+    uwb_timestamp_t resp_rx_ts;
 
     /** @brief 本设备发送 Final 帧的 40 位发送时间戳。 (由 Tag 记录) */
-    uint8_t final_tx_ts[5];
+    uwb_timestamp_t final_tx_ts;
 
     /** @brief 本设备接收 Final 帧的 40 位接收时间戳。 (由 Anchor 记录) */
-    uint8_t final_rx_ts[5];
+    uwb_timestamp_t final_rx_ts;
 
     float anchor_pos_x;
     float anchor_pos_y;
@@ -104,6 +104,5 @@ double calculate_distance_from_timestamps(uint64_t tag_poll_tx_ts,
                                           uint64_t anchor_resp_tx_ts,
                                           uint64_t anchor_final_rx_ts);
 void UWBMssageInit(void);
-int configure_manual_max_tx_power(uint8_t channel, uint8_t prf);
 
 #endif

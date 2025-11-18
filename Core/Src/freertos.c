@@ -22,7 +22,6 @@
 #include "task.h"
 #include "main.h"
 #include "cmsis_os.h"
-#include <stdbool.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -60,43 +59,34 @@ extern TIM_HandleTypeDef htim16;
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-static bool Sensors_ShouldRun(void)
-{
-  const app_config_t *cfg = AppConfig_Get();
-  if (cfg == NULL) {
-    return true;
-  }
-  return (cfg->device_role == APP_DEVICE_ROLE_TAG);
-}
-
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+    .name       = "defaultTask",
+    .stack_size = 128 * 4,
+    .priority   = (osPriority_t)osPriorityNormal,
 };
 /* Definitions for IMU */
 osThreadId_t IMUHandle;
 const osThreadAttr_t IMU_attributes = {
-  .name = "IMU",
-  .stack_size = 256 * 4,
-  .priority = (osPriority_t) osPriorityHigh,
+    .name       = "IMU",
+    .stack_size = 256 * 4,
+    .priority   = (osPriority_t)osPriorityHigh,
 };
 /* Definitions for SDMMC */
 osThreadId_t SDMMCHandle;
 const osThreadAttr_t SDMMC_attributes = {
-  .name = "SDMMC",
-  .stack_size = 1024 * 4,
-  .priority = (osPriority_t) osPriorityBelowNormal,
+    .name       = "SDMMC",
+    .stack_size = 1024 * 4,
+    .priority   = (osPriority_t)osPriorityBelowNormal,
 };
 /* Definitions for GNSS */
 osThreadId_t GNSSHandle;
 const osThreadAttr_t GNSS_attributes = {
-  .name = "GNSS",
-  .stack_size = 1024 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+    .name       = "GNSS",
+    .stack_size = 1024 * 4,
+    .priority   = (osPriority_t)osPriorityNormal,
 };
 
 /* Private function prototypes -----------------------------------------------*/
@@ -137,31 +127,32 @@ void GNSSTask(void *argument);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
 /**
-  * @brief  FreeRTOS initialization
-  * @param  None
-  * @retval None
-  */
-void MX_FREERTOS_Init(void) {
-  /* USER CODE BEGIN Init */
+ * @brief  FreeRTOS initialization
+ * @param  None
+ * @retval None
+ */
+void MX_FREERTOS_Init(void)
+{
+    /* USER CODE BEGIN Init */
 
-  /* USER CODE END Init */
+    /* USER CODE END Init */
 
-  /* USER CODE BEGIN RTOS_MUTEX */
+    /* USER CODE BEGIN RTOS_MUTEX */
     /* add mutexes, ... */
 
-  /* USER CODE END RTOS_MUTEX */
+    /* USER CODE END RTOS_MUTEX */
 
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
+    /* USER CODE BEGIN RTOS_SEMAPHORES */
     /* add semaphores, ... */
 
-  /* USER CODE END RTOS_SEMAPHORES */
+    /* USER CODE END RTOS_SEMAPHORES */
 
-  /* USER CODE BEGIN RTOS_TIMERS */
+    /* USER CODE BEGIN RTOS_TIMERS */
     /* start timers, add new ones, ... */
 
-  /* USER CODE END RTOS_TIMERS */
+    /* USER CODE END RTOS_TIMERS */
 
-  /* USER CODE BEGIN RTOS_QUEUES */
+    /* USER CODE BEGIN RTOS_QUEUES */
     /* add queues, ... */
 
     gnss_data_queue = xQueueCreate(10, sizeof(GNSS_Message_t));
@@ -172,43 +163,46 @@ void MX_FREERTOS_Init(void) {
 
     IMUDataToSDTaskQueue = xQueueCreate(64, sizeof(MsgIMU_t)); // 64 帧 一帧 49字节
 
-  /* USER CODE END RTOS_QUEUES */
+    /* USER CODE END RTOS_QUEUES */
 
-  /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+    /* Create the thread(s) */
+    /* creation of defaultTask */
+    defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-  bool sensors_enabled = Sensors_ShouldRun();
-  if (!sensors_enabled) {
-    log_warn("Sensor tasks disabled for current device role");
-  }
-
-  if (sensors_enabled) {
-    /* creation of IMU */
-    IMUHandle = osThreadNew(IMUTask, NULL, &IMU_attributes);
-
-    /* creation of SDMMC */
-    SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
-
-    /* creation of GNSS */
-    GNSSHandle = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
-  } else {
-    IMUHandle   = NULL;
-    SDMMCHandle = NULL;
-    GNSSHandle  = NULL;
-  }
-
-  /* USER CODE BEGIN RTOS_THREADS */
+    /* USER CODE BEGIN RTOS_THREADS */
     /* add threads, ... */
     //  IMUDealHandle            = osThreadNew(IMUDataDealTask, NULL, &IMuUDeal_attributes);
+
+    defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+    const app_config_t *cfg      = AppConfig_Get();
+    bool run_tag_sensors         = 0;
+    app_device_role_t deviceRole = APP_DEVICE_ROLE_TAG;
+    if (cfg != NULL) {
+        deviceRole = (app_device_role_t)cfg->device_role;
+    } else {
+        log_warn("AppConfig unavailable during RTOS init, enabling all sensor tasks by default");
+    }
+
+    if (run_tag_sensors) {
+        IMUHandle   = osThreadNew(IMUTask, NULL, &IMU_attributes);
+        SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
+        GNSSHandle  = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
+        log_info("Sensor tasks enabled for TAG role");
+    } else {
+        IMUHandle   = NULL;
+        SDMMCHandle = NULL;
+        GNSSHandle  = NULL;
+        log_info("Sensor tasks skipped for ANCHOR role");
+    }
+
     InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
     dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
-  /* USER CODE END RTOS_THREADS */
+    /* USER CODE END RTOS_THREADS */
 
-  /* USER CODE BEGIN RTOS_EVENTS */
+    /* USER CODE BEGIN RTOS_EVENTS */
     /* add events, ... */
-  /* USER CODE END RTOS_EVENTS */
-
+    /* USER CODE END RTOS_EVENTS */
 }
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -220,13 +214,13 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
-  /* USER CODE BEGIN StartDefaultTask */
+    /* USER CODE BEGIN StartDefaultTask */
 
     /* Infinite loop */
     for (;;) {
         osDelay(1);
     }
-  /* USER CODE END StartDefaultTask */
+    /* USER CODE END StartDefaultTask */
 }
 
 /* USER CODE BEGIN Header_IMUTask */
@@ -238,14 +232,14 @@ void StartDefaultTask(void *argument)
 /* USER CODE END Header_IMUTask */
 void IMUTask(void *argument)
 {
-  /* USER CODE BEGIN IMUTask */
+    /* USER CODE BEGIN IMUTask */
 
     IMUSamplingTaskFunc(argument);
     /* Infinite loop */
     for (;;) {
         osDelay(1);
     }
-  /* USER CODE END IMUTask */
+    /* USER CODE END IMUTask */
 }
 
 /* USER CODE BEGIN Header_SDMMCTask */
@@ -257,7 +251,7 @@ void IMUTask(void *argument)
 /* USER CODE END Header_SDMMCTask */
 void SDMMCTask(void *argument)
 {
-  /* USER CODE BEGIN SDMMCTask */
+    /* USER CODE BEGIN SDMMCTask */
     /* Infinite loop */
     // 直接检测sd卡是否插上，如果没有不初始化，进入死循环,如果检测到插上则直接开始初始化，执行写入的代码
     if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5) == GPIO_PIN_RESET) {
@@ -274,7 +268,7 @@ void SDMMCTask(void *argument)
     for (;;) {
         osDelay(1);
     }
-  /* USER CODE END SDMMCTask */
+    /* USER CODE END SDMMCTask */
 }
 
 /* USER CODE BEGIN Header_GNSSTask */
@@ -286,9 +280,9 @@ void SDMMCTask(void *argument)
 /* USER CODE END Header_GNSSTask */
 void GNSSTask(void *argument)
 {
-  /* USER CODE BEGIN GNSSTask */
+    /* USER CODE BEGIN GNSSTask */
 
-    UM960SamplingTaskFunc();
+    // UM960SamplingTaskFunc();
 
     /* Infinite loop */
     for (;;) {
@@ -300,7 +294,7 @@ void GNSSTask(void *argument)
 
         osDelay(1);
     }
-  /* USER CODE END GNSSTask */
+    /* USER CODE END GNSSTask */
 }
 
 /* Private application code --------------------------------------------------*/
@@ -334,4 +328,3 @@ void InitTask(void *argument)
     osThreadTerminate(osThreadGetId());
 }
 /* USER CODE END Application */
-

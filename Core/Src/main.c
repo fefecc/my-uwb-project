@@ -30,6 +30,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "timestamptask.h"
+#include "DW1000samplingtask.h"
 #include "stdio.h"
 #include "app_log.h"
 #include "app_config.h"
@@ -114,6 +115,7 @@ static void App_RunBootloaderMode(void)
         log_info("Default configuration stored to flash");
     }
     App_PrintCurrentConfig();
+    UWBMssageInit();
     App_StreamConfigSnapshot("BOOT");
 
     const uint32_t cfg_emit_period_ms = 1000U;
@@ -196,7 +198,7 @@ int main(void)
         // Flash 数据非法时回退到默认配置，并尝试重新写入
         log_warn("Using built-in configuration defaults (status=%lu)", cfg_status);
         if (AppConfig_SaveDefaults() != HAL_OK) {
-            log_error("Unable to save default configuration to flash");
+            log_error("Unable to save default configuration to flash"); // 表示使用默认的参数
         }
     }
     App_PrintCurrentConfig();

@@ -18,9 +18,9 @@ static const app_config_t g_app_config_defaults = {
     .version      = APP_CONFIG_VERSION,
     .length       = sizeof(app_config_t),
     .pan_id       = 0xF0F0,
-    .short_addr   = 0x0032,
+    .short_addr   = 0x0030,
     .frame_ctrl   = {0x41, 0x88},
-    .device_role  = APP_DEVICE_ROLE_ANCHOR,
+    .device_role  = APP_DEVICE_ROLE_TAG,
     .reserved0    = {0},
     .log_level    = LOG_LEVEL_INFO,
     .anchor_pos_x = 0.0f,
@@ -78,6 +78,7 @@ const app_config_t *AppConfig_GetDefaults(void)
 
 HAL_StatusTypeDef AppConfig_LoadFromFlash(void)
 {
+    // 读取flash中的参数
     const app_config_t *from_flash = (const app_config_t *)APP_CONFIG_FLASH_ADDR;
     // 先校验魔数/版本/长度，确保读到的数据可用
     if (AppConfig_IsValid(from_flash)) {
@@ -88,7 +89,7 @@ HAL_StatusTypeDef AppConfig_LoadFromFlash(void)
     }
 
     log_warn("Config flash payload invalid, falling back to defaults");
-    AppConfig_InitDefaults(&g_cached_config);
+    AppConfig_InitDefaults(&g_cached_config); // 复制默认的值
     g_config_ready = true;
     return HAL_ERROR;
 }

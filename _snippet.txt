@@ -1,0 +1,15 @@
+static void Tag_SetState(Tag_State_t next_state)
+{
+    // 返回状态机当前的状态
+    if (g_current_tag_state != next_state) {
+        log_info("TAG state -> %s", TagStateName(next_state));
+    }
+    g_current_tag_state = next_state;
+}
+
+void dw1000TagMain(void)
+{
+    log_info("TAG state -> %s", TagStateName(g_current_tag_state));
+    while (1) {
+        switch (g_current_tag_state) {
+            
