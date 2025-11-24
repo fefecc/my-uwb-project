@@ -47,15 +47,9 @@ extern dw1000_local_device_t local_device;
 
 extern void apply_dw1000_optimizations(const dwt_config_t *config);
 
-static const dwt_config_t *SelectConfig(const dwt_config_t *user_cfg)
-{
-    return (user_cfg != NULL) ? user_cfg : &config;
-}
-
 void BPhero_UWB_InitWithProfile(const dwt_config_t *user_cfg, uint16_t pan_id, uint16_t short_addr)
 {
-    const dwt_config_t *user_cfg_ptr = SelectConfig(user_cfg);
-    dwt_config_t active_cfg          = *user_cfg_ptr;
+    dwt_config_t active_cfg = (user_cfg != NULL) ? *user_cfg : config;
 
     reset_DW1000();
     spi_set_rate_low();
@@ -67,16 +61,9 @@ void BPhero_UWB_InitWithProfile(const dwt_config_t *user_cfg, uint16_t pan_id, u
     }
     spi_set_rate_high();
 
-    uint32_t dev_id = dwt_readdevid();
-    if (dev_id != DWT_DEVICE_ID) {
-        log_error("Unexpected DW1000 device id: 0x%08lX", dev_id);
-        while (1) {
-            osDelay(1000);
-        }
-    }
-
     dwt_configure(&active_cfg);
-    apply_dw1000_optimizations(&active_cfg);
+
+    // apply_dw1000_optimizations(&active_cfg);
 
     dwt_setrxantennadelay(RX_ANT_DLY);
     dwt_settxantennadelay(TX_ANT_DLY);
@@ -84,13 +71,9 @@ void BPhero_UWB_InitWithProfile(const dwt_config_t *user_cfg, uint16_t pan_id, u
     dwt_setpanid(pan_id);
     dwt_setaddress16(short_addr);
 
-    configure_manual_max_tx_power(active_cfg.chan, active_cfg.prf);
+    // configure_manual_max_tx_power(active_cfg.chan, active_cfg.prf);
 
-    uint32_t interrupt_mask = DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RFCE;
+    uint32_t interrupt_mask = DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RFCE |
+                              DWT_INT_RXPTO | DWT_INT_SFDT; // enable interrupt
     dwt_setinterrupt(interrupt_mask, 1);
-}
-
-void BPhero_UWB_Init(void)
-{
-    BPhero_UWB_InitWithProfile(&config, 0xF0F0, local_device.short_addr);
 }

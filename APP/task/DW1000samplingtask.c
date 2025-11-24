@@ -19,6 +19,19 @@
 #include <stdbool.h>
 #include "uwb_timestamp.h"
 #include "uwb_frame.h"
+#include <math.h> // fabs
+
+#define TAG_LOG_VERBOSE 0
+
+#if TAG_LOG_VERBOSE
+#define TAG_LOG_ERROR(...) log_error(__VA_ARGS__)
+#define TAG_LOG_WARN(...)  log_warn(__VA_ARGS__)
+#define TAG_LOG_INFO(...)  log_info(__VA_ARGS__)
+#else
+#define TAG_LOG_ERROR(...) ((void)0)
+#define TAG_LOG_WARN(...)  ((void)0)
+#define TAG_LOG_INFO(...)  log_info(__VA_ARGS__)
+#endif
 
 TaskHandle_t dw1000samplingTaskNotifyHandle                 = NULL;
 static volatile isr_timestamp_packet_t isr_timestamp_packet = {0};
@@ -28,21 +41,18 @@ typedef enum {
     TAG_STATE_AWAIT_POLL_TX_CONFIRM,
     TAG_STATE_AWAIT_RESPONSE_RX,
     TAG_STATE_AWAIT_FINAL_TX_CONFIRM,
-    TAG_STATE_AWAIT_DISDATA_RX
+    TAG_STATE_AWAIT_RESULT_RX
 } Tag_State_t;
 
 typedef enum {
     ANCHOR_STATE_AWAIT_POLL_RX,
     ANCHOR_STATE_AWAIT_RESPONSE_TX_CONFIRM,
     ANCHOR_STATE_AWAIT_FINAL_RX,
-    ANCHOR_STATE_AWAIT_DISDATA_TX_CONFIRM
+    ANCHOR_STATE_AWAIT_RESULT_TX_CONFIRM
 } Anchor_State_t;
 
 void reset_anchor_state_machine(Anchor_State_t *current_anchor_state);
-// Force the tag state machine back to IDLE and clear pending notifications
 void reset_tag_state_machine(Tag_State_t *current_tag_state);
-
-#define MaxAnchorNum          3
 
 #define UWB_ANCHOR_TABLE_SIZE 3
 
@@ -70,12 +80,12 @@ static uwb_anchor_record_t g_anchor_table[UWB_ANCHOR_TABLE_SIZE] = {
 
 static uwb_anchor_record_t g_temp_anchor_record = {0};
 
-#define UWB_DELAY_MS 10U
+#define UWB_DELAY_MS 15U
 
-// Tracks the state of the current tag->anchor ranging exchange on the anchor
 typedef struct {
     bool active;
     uint16_t tag_addr;
+    uint16_t tag_pan_id;
     uint8_t sequence_num;
     uwb_timestamp_t poll_rx_ts;
     uwb_timestamp_t resp_tx_ts;
@@ -100,7 +110,6 @@ static void UWB_ResetAnchorTimestamps(uwb_anchor_record_t *record)
     if (record == NULL) {
         return;
     }
-    // clear timestamp
     uwb_timestamp_from_u64(0, &record->poll_tx);
     uwb_timestamp_from_u64(0, &record->poll_rx);
     uwb_timestamp_from_u64(0, &record->resp_tx);
@@ -113,16 +122,8 @@ static void UWB_ResetAnchorTimestamps(uwb_anchor_record_t *record)
     record->valid            = false;
 }
 
-static void UWB_ClearTempAnchorRecord(void)
-{
-    uint16_t addr = g_temp_anchor_record.short_addr;
-    memset(&g_temp_anchor_record, 0, sizeof(g_temp_anchor_record));
-    g_temp_anchor_record.short_addr = addr;
-}
-
 static void UWB_CommitTempAnchorRecord(void)
 {
-    // Persist the most recent ranging exchange into the anchor table with timestamps
     uwb_anchor_record_t *dst = UWB_FindAnchorRecord(g_temp_anchor_record.short_addr);
     if (dst == NULL) {
         return;
@@ -160,20 +161,19 @@ static uint32_t notified_value = 0;
 
 static uint16_t NodeIndex = 0;
 
-// Measurements are pushed to this queue for other tasks to consume
 QueueHandle_t dw1000data_queue = NULL;
 
 static float g_anchor_pos_x = 0.0f;
 static float g_anchor_pos_y = 0.0f;
 
-// Tag state machine drives POLL/RESP/FINAL exchanges with anchors
 void dw1000TagMain(void)
 {
     while (1) {
         switch (g_current_tag_state) {
             case TAG_STATE_IDLE: {
-                // Trigger next ranging cycle
-                osDelay(2000);
+                //   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+                osDelay(500);
+
                 HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
 
                 uwb_anchor_record_t *active_record = &g_anchor_table[NodeIndex];
@@ -189,7 +189,7 @@ void dw1000TagMain(void)
 
                 int frame_size = uwb_frame_encode(&poll_frame, dw1000tx_buffer, sizeof(dw1000tx_buffer));
                 if (frame_size < 0) {
-                    log_error("Failed to encode POLL frame");
+                    log_error("poll frame pack failed, seq = %u", local_device.seqNum);
                     reset_tag_state_machine(&g_current_tag_state);
                     break;
                 }
@@ -203,284 +203,224 @@ void dw1000TagMain(void)
             }
 
             case TAG_STATE_AWAIT_POLL_TX_CONFIRM: {
-                // Wait for POLL TX confirmation from DW1000
-                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(500)) == pdTRUE) {
-                    if (notified_value & UWB_EVENT_TX_DONE) {
-                        g_temp_anchor_record.poll_tx = isr_timestamp_packet.tx;
-                        dwt_setrxtimeout(65535);
-                        dwt_rxenable(0);
-                        g_current_tag_state = TAG_STATE_AWAIT_RESPONSE_RX;
-                    } else {
-                        log_error("POLL frame interrupt error seq=%u notified=0x%08lX", local_device.seqNum, notified_value);
-                        UWB_ClearTempAnchorRecord();
-                        reset_tag_state_machine(&g_current_tag_state);
-                    }
+                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(100)) == pdTRUE &&
+                    (notified_value & UWB_EVENT_TX_DONE)) {
+                    g_temp_anchor_record.poll_tx = isr_timestamp_packet.tx;
+                    dwt_setrxtimeout(65535);
+                    dwt_rxenable(0);
+                    g_current_tag_state = TAG_STATE_AWAIT_RESPONSE_RX;
                 } else {
-                    log_error("AWAIT POLL_TX timeout seq=%u", local_device.seqNum);
-                    UWB_ClearTempAnchorRecord();
+                    log_error("poll frame TX failed, seq=%u ", local_device.seqNum);
                     reset_tag_state_machine(&g_current_tag_state);
                 }
                 break;
             }
 
             case TAG_STATE_AWAIT_RESPONSE_RX: {
-                // Expecting anchor RESP frame
-                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(500)) == pdTRUE) {
+                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(100)) == pdTRUE) {
                     if (notified_value & UWB_EVENT_RX_DONE) {
-                        uint16_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
-                        dwt_readrxdata(dw1000rx_buffer, frame_len, 0);
-
-                        uwb_frame_t resp_frame;
-                        if (uwb_frame_decode(&resp_frame, dw1000rx_buffer, frame_len) == 0 &&
-                            resp_frame.type == UWB_FRAME_TYPE_RESP) {
-                            if (resp_frame.header.sequence_num != local_device.seqNum) {
-                                log_warn("RESP sequence mismatch exp=%u got=%u", local_device.seqNum, resp_frame.header.sequence_num);
-                                UWB_ClearTempAnchorRecord();
-                                reset_tag_state_machine(&g_current_tag_state);
-                                break;
-                            }
-
+                        uint16_t rx_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
+                        dwt_readrxdata(dw1000rx_buffer, rx_len, 0);
+                        uwb_frame_t rx_frame;
+                        if (uwb_frame_decode(&rx_frame, dw1000rx_buffer, rx_len) == 0 &&
+                            rx_frame.type == UWB_FRAME_TYPE_RESP) {
                             g_temp_anchor_record.resp_rx = isr_timestamp_packet.rx;
-                            g_temp_anchor_record.poll_rx = resp_frame.payload.resp.poll_rx;
-                            g_temp_anchor_record.resp_tx = resp_frame.payload.resp.resp_tx;
-
-                            uwb_timestamp_t final_tx_ts =
-                                uwb_timestamp_add_delay_ms(&g_temp_anchor_record.resp_rx, UWB_DELAY_MS);
-                            g_temp_anchor_record.final_tx = final_tx_ts;
-                            uint64_t final_ticks          = uwb_timestamp_to_u64(&final_tx_ts);
-                            dwt_setdelayedtrxtime((uint32_t)(final_ticks >> 8));
+                            g_temp_anchor_record.poll_rx = rx_frame.payload.resp.poll_rx;
+                            g_temp_anchor_record.resp_tx = rx_frame.payload.resp.resp_tx;
 
                             uwb_address_t self_addr = {.pan_id = local_device.pan_id, .short_addr = local_device.short_addr};
-                            uwb_address_t dest_addr = {.pan_id = local_device.pan_id, .short_addr = g_temp_anchor_record.short_addr};
+                            uwb_address_t dest_addr = {.pan_id = rx_frame.header.pan_id, .short_addr = rx_frame.header.source_addr};
                             uwb_frame_t final_frame;
                             uwb_frame_init(&final_frame, UWB_FRAME_TYPE_FINAL, &self_addr, &dest_addr, local_device.seqNum);
+
+                            uwb_timestamp_t final_tx_planned = uwb_timestamp_add_delay_ms(&g_temp_anchor_record.resp_rx, UWB_DELAY_MS);
+                            g_temp_anchor_record.final_tx    = final_tx_planned;
+
                             final_frame.payload.final.poll_tx  = g_temp_anchor_record.poll_tx;
                             final_frame.payload.final.poll_rx  = g_temp_anchor_record.poll_rx;
                             final_frame.payload.final.resp_tx  = g_temp_anchor_record.resp_tx;
                             final_frame.payload.final.resp_rx  = g_temp_anchor_record.resp_rx;
-                            final_frame.payload.final.final_tx = g_temp_anchor_record.final_tx;
+                            final_frame.payload.final.final_tx = final_tx_planned;
 
-                            int frame_size = uwb_frame_encode(&final_frame, dw1000tx_buffer, sizeof(dw1000tx_buffer));
-                            if (frame_size < 0) {
-                            log_error("Failed to encode FINAL frame seq=%u", local_device.seqNum);
-                                UWB_ClearTempAnchorRecord();
+                            int final_len = uwb_frame_encode(&final_frame, dw1000tx_buffer, sizeof(dw1000tx_buffer));
+                            if (final_len > 0) {
+                                uint64_t final_ticks = uwb_timestamp_to_u64(&final_tx_planned);
+                                dwt_setdelayedtrxtime((uint32_t)(final_ticks >> 8));
+                                dwt_writetxdata(final_len, dw1000tx_buffer, 0);
+                                dwt_writetxfctrl(final_len, 0);
+                                dwt_starttx(DWT_START_TX_DELAYED);
+                                g_current_tag_state = TAG_STATE_AWAIT_FINAL_TX_CONFIRM;
+                            } else {
+                                log_error("final frame encode failed seq=%u", local_device.seqNum);
                                 reset_tag_state_machine(&g_current_tag_state);
-                                break;
                             }
-
-                            dwt_writetxdata(frame_size, dw1000tx_buffer, 0);
-                            dwt_writetxfctrl(frame_size, 0);
-                            dwt_starttx(DWT_START_TX_DELAYED);
-
-                            g_current_tag_state = TAG_STATE_AWAIT_FINAL_TX_CONFIRM;
                         } else {
-                            log_error("RESPONSE frame decode error seq=%u", local_device.seqNum);
-                            UWB_ClearTempAnchorRecord();
+                            log_error("RESP recceived failed seq=%u", rx_frame.header.sequence_num);
                             reset_tag_state_machine(&g_current_tag_state);
                         }
                     } else {
-                        log_error("AWAIT RESPONSE_RX timeout seq=%u event=0x%08lX", local_device.seqNum, notified_value);
-                        UWB_ClearTempAnchorRecord();
+                        log_error("resp recceived failed notified_value=%u", notified_value);
                         reset_tag_state_machine(&g_current_tag_state);
                     }
                 } else {
-                    log_error("AWAIT RESPONSE_RX timeout seq=%u waiting", local_device.seqNum);
-                    UWB_ClearTempAnchorRecord();
+                    log_error("resp recceived failed");
                     reset_tag_state_machine(&g_current_tag_state);
                 }
                 break;
             }
 
             case TAG_STATE_AWAIT_FINAL_TX_CONFIRM: {
-                // Confirm FINAL TX before listening for result
-                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(500)) == pdTRUE) {
-                    if (notified_value & UWB_EVENT_TX_DONE) {
-                        dwt_setrxtimeout(65535);
-                        dwt_rxenable(0);
-                        g_current_tag_state = TAG_STATE_AWAIT_DISDATA_RX;
-                    } else {
-                        log_error("AWAIT FINAL_TX timeout seq=%u event=0x%08lX", local_device.seqNum, notified_value);
-                        UWB_ClearTempAnchorRecord();
-                        reset_tag_state_machine(&g_current_tag_state);
-                    }
+                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(100)) == pdTRUE &&
+                    (notified_value & UWB_EVENT_TX_DONE)) {
+                    g_temp_anchor_record.final_tx = isr_timestamp_packet.tx;
+                    dwt_setrxtimeout(65535);
+                    dwt_rxenable(0);
+                    g_current_tag_state = TAG_STATE_AWAIT_RESULT_RX;
                 } else {
-                    log_error("AWAIT FINAL_TX timeout seq=%u wait", local_device.seqNum);
-                    UWB_ClearTempAnchorRecord();
+                    log_error("FINAL tx failed seq=%u", local_device.seqNum);
                     reset_tag_state_machine(&g_current_tag_state);
                 }
                 break;
             }
 
-            case TAG_STATE_AWAIT_DISDATA_RX: {
-                // Await anchor result frame containing timestamps/position
-                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(500)) == pdTRUE) {
+            case TAG_STATE_AWAIT_RESULT_RX: {
+                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(200)) == pdTRUE) {
                     if (notified_value & UWB_EVENT_RX_DONE) {
-                        uint16_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
-                        dwt_readrxdata(dw1000rx_buffer, frame_len, 0);
+                        uint16_t rx_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
+                        dwt_readrxdata(dw1000rx_buffer, rx_len, 0);
+                        uwb_frame_t rx_frame;
+                        if (uwb_frame_decode(&rx_frame, dw1000rx_buffer, rx_len) == 0 &&
+                            rx_frame.type == UWB_FRAME_TYPE_RESULT) {
+                            g_temp_anchor_record.final_rx = rx_frame.payload.result.final_rx;
+                            g_temp_anchor_record.pos_x    = rx_frame.payload.result.anchor_pos_x;
+                            g_temp_anchor_record.pos_y    = rx_frame.payload.result.anchor_pos_y;
 
-                        uwb_frame_t result_frame;
-                        if (uwb_frame_decode(&result_frame, dw1000rx_buffer, frame_len) == 0 &&
-                            result_frame.type == UWB_FRAME_TYPE_RESULT) {
-                            if (result_frame.header.sequence_num != local_device.seqNum) {
-                                log_warn("RESULT sequence mismatch exp=%u got=%u", local_device.seqNum, result_frame.header.sequence_num);
-                                UWB_ClearTempAnchorRecord();
-                                reset_tag_state_machine(&g_current_tag_state);
-                                break;
-                            }
+                            uint64_t tag_poll_tx    = uwb_timestamp_to_u64(&g_temp_anchor_record.poll_tx);
+                            uint64_t tag_resp_rx    = uwb_timestamp_to_u64(&g_temp_anchor_record.resp_rx);
+                            uint64_t tag_final_tx   = uwb_timestamp_to_u64(&g_temp_anchor_record.final_tx);
+                            uint64_t anchor_poll_rx = uwb_timestamp_to_u64(&rx_frame.payload.result.poll_rx);
+                            uint64_t anchor_resp_tx = uwb_timestamp_to_u64(&rx_frame.payload.result.resp_tx);
+                            uint64_t anchor_final_rx =
+                                uwb_timestamp_to_u64(&rx_frame.payload.result.final_rx);
 
-                            g_temp_anchor_record.poll_tx  = result_frame.payload.result.poll_tx;
-                            g_temp_anchor_record.poll_rx  = result_frame.payload.result.poll_rx;
-                            g_temp_anchor_record.resp_tx  = result_frame.payload.result.resp_tx;
-                            g_temp_anchor_record.resp_rx  = result_frame.payload.result.resp_rx;
-                            g_temp_anchor_record.final_tx = result_frame.payload.result.final_tx;
-                            g_temp_anchor_record.final_rx = result_frame.payload.result.final_rx;
-                            g_temp_anchor_record.pos_x    = result_frame.payload.result.anchor_pos_x;
-                            g_temp_anchor_record.pos_y    = result_frame.payload.result.anchor_pos_y;
+                            g_temp_anchor_record.poll_rx  = rx_frame.payload.result.poll_rx;
+                            g_temp_anchor_record.resp_tx  = rx_frame.payload.result.resp_tx;
+                            g_temp_anchor_record.final_rx = rx_frame.payload.result.final_rx;
 
-                            uint64_t poll_tx  = uwb_timestamp_to_u64(&g_temp_anchor_record.poll_tx);
-                            uint64_t resp_rx  = uwb_timestamp_to_u64(&g_temp_anchor_record.resp_rx);
-                            uint64_t final_tx = uwb_timestamp_to_u64(&g_temp_anchor_record.final_tx);
-                            uint64_t poll_rx  = uwb_timestamp_to_u64(&g_temp_anchor_record.poll_rx);
-                            uint64_t resp_tx  = uwb_timestamp_to_u64(&g_temp_anchor_record.resp_tx);
-                            uint64_t final_rx = uwb_timestamp_to_u64(&g_temp_anchor_record.final_rx);
+                            double dist = calculate_distance_from_timestamps_v2(tag_poll_tx,
+                                                                                anchor_poll_rx,
+                                                                                anchor_resp_tx,
+                                                                                tag_resp_rx,
+                                                                                tag_final_tx,
+                                                                                anchor_final_rx);
 
-                            double distance                 = calculate_distance_from_timestamps(poll_tx, resp_rx, final_tx,
-                                                                                                 poll_rx, resp_tx, final_rx);
-                            g_temp_anchor_record.distance_m = distance;
-                            twr_distance                    = distance;
-
+                            g_temp_anchor_record.distance_m = dist;
                             UWB_CommitTempAnchorRecord();
 
-                            // Distance queue is disabled for now
-                            (void)dw1000data_queue;
+                            log_info("RESULT seq=%d dist=%.3f m ", rx_frame.header.sequence_num, dist);
 
-                            reset_tag_state_machine(&g_current_tag_state);
+                            g_current_tag_state = TAG_STATE_IDLE;
                         } else {
-                            log_error("RESULT frame decode error seq=%u", local_device.seqNum);
-                            UWB_ClearTempAnchorRecord();
+                            log_error("RESULT decode/type failed seq=%u", rx_frame.header.sequence_num);
                             reset_tag_state_machine(&g_current_tag_state);
                         }
                     } else {
-                        log_error("AWAIT RESULT_RX timeout seq=%u event=0x%08lX", local_device.seqNum, notified_value);
-                        UWB_ClearTempAnchorRecord();
+                        log_error("result wait failed event=0x%08lX", notified_value);
                         reset_tag_state_machine(&g_current_tag_state);
                     }
                 } else {
-                    log_error("AWAIT RESULT_RX timeout seq=%u wait", local_device.seqNum);
-                    UWB_ClearTempAnchorRecord();
+                    log_error("result wait timeout");
                     reset_tag_state_machine(&g_current_tag_state);
                 }
                 break;
             }
 
             default:
-                UWB_ClearTempAnchorRecord();
-                reset_tag_state_machine(&g_current_tag_state);
+                g_current_tag_state = TAG_STATE_IDLE;
                 break;
         }
     }
 }
+
 void dw1000AnchorMain(void)
 {
-    // Anchor state machine listens for tag POLL and responds with RESP/RESULT
+    Anchor_ResetSession(); // clear anchor session
     reset_anchor_state_machine(&g_current_anchor_state);
-    Anchor_ResetSession();
 
     while (1) {
         switch (g_current_anchor_state) {
             case ANCHOR_STATE_AWAIT_POLL_RX: {
-                // Continuously wait for an incoming tag POLL frame
-                dwt_setrxtimeout(0);
-                dwt_rxenable(0);
-
-                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(10000)) == pdTRUE) {
+                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, portMAX_DELAY) == pdTRUE) {
                     if (notified_value & UWB_EVENT_RX_DONE) {
-                        HAL_GPIO_TogglePin(LED3_GPIO_Port, LED3_Pin);
                         uint16_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
                         dwt_readrxdata(dw1000rx_buffer, frame_len, 0);
 
                         uwb_frame_t poll_frame;
-                        if (uwb_frame_decode(&poll_frame, dw1000rx_buffer, frame_len) == 0) {
-                            if (poll_frame.type != UWB_FRAME_TYPE_POLL) {
-                                log_warn("Unexpected frame type 0x%02X while waiting for POLL", poll_frame.type);
-                                reset_anchor_state_machine(&g_current_anchor_state);
-                                break;
-                            }
-
-                            Anchor_ResetSession();
-                            g_anchor_session.active       = true;
-                            g_anchor_session.tag_addr     = poll_frame.header.source_addr;
+                        if (uwb_frame_decode(&poll_frame, dw1000rx_buffer, frame_len) == 0 &&
+                            poll_frame.type == UWB_FRAME_TYPE_POLL) {
                             g_anchor_session.sequence_num = poll_frame.header.sequence_num;
+                            g_anchor_session.tag_addr     = poll_frame.header.source_addr;
+                            g_anchor_session.tag_pan_id   = poll_frame.header.pan_id;
                             g_anchor_session.poll_rx_ts   = isr_timestamp_packet.rx;
+                            local_device.seqNum           = g_anchor_session.sequence_num;
 
-                            uwb_timestamp_t resp_tx_ts =
-                                uwb_timestamp_add_delay_ms(&g_anchor_session.poll_rx_ts, UWB_DELAY_MS);
-                            g_anchor_session.resp_tx_ts = resp_tx_ts;
-                            uint64_t resp_ticks         = uwb_timestamp_to_u64(&resp_tx_ts);
+                            log_info("start RESP seq=%u", poll_frame.header.sequence_num);
+                            log_info("poll_rx_ts=0x%010llX",
+                                     (unsigned long long)uwb_timestamp_to_u64(&g_anchor_session.poll_rx_ts));
+
+                            uwb_timestamp_t resp_tx     = uwb_timestamp_add_delay_ms(&g_anchor_session.poll_rx_ts, UWB_DELAY_MS);
+                            g_anchor_session.resp_tx_ts = resp_tx;
+                            uint64_t resp_ticks         = uwb_timestamp_to_u64(&resp_tx);
+                            log_info("resp_ticks=0x%010llX", (unsigned long long)resp_ticks);
                             dwt_setdelayedtrxtime((uint32_t)(resp_ticks >> 8));
 
                             uwb_address_t self_addr = {.pan_id = local_device.pan_id, .short_addr = local_device.short_addr};
                             uwb_address_t dest_addr = {.pan_id = poll_frame.header.pan_id, .short_addr = poll_frame.header.source_addr};
                             uwb_frame_t resp_frame;
-                            uwb_frame_init(&resp_frame, UWB_FRAME_TYPE_RESP, &self_addr, &dest_addr, poll_frame.header.sequence_num);
+                            uwb_frame_init(&resp_frame, UWB_FRAME_TYPE_RESP, &self_addr, &dest_addr, g_anchor_session.sequence_num);
                             resp_frame.payload.resp.poll_rx = g_anchor_session.poll_rx_ts;
-                            resp_frame.payload.resp.resp_tx = resp_tx_ts;
+                            resp_frame.payload.resp.resp_tx = g_anchor_session.resp_tx_ts;
 
-                            int frame_size = uwb_frame_encode(&resp_frame, dw1000tx_buffer, sizeof(dw1000tx_buffer));
-                            if (frame_size < 0) {
-                                log_error("Failed to encode RESP frame seq=%u", poll_frame.header.sequence_num);
-                                reset_anchor_state_machine(&g_current_anchor_state);
+                            int tx_len = uwb_frame_encode(&resp_frame, dw1000tx_buffer, sizeof(dw1000tx_buffer));
+                            if (tx_len > 0) {
+                                dwt_writetxdata(tx_len, dw1000tx_buffer, 0);
+                                dwt_writetxfctrl(tx_len, 0);
+                                dwt_starttx(DWT_START_TX_DELAYED);
+                                g_current_anchor_state = ANCHOR_STATE_AWAIT_RESPONSE_TX_CONFIRM;
                                 break;
+                            } else {
+                                log_error("anchor resp encode failed seq=%u",
+                                          resp_frame.header.sequence_num);
                             }
-
-                            dwt_writetxdata(frame_size, dw1000tx_buffer, 0);
-                            dwt_writetxfctrl(frame_size, 0);
-                            dwt_starttx(DWT_START_TX_DELAYED);
-
-                            g_current_anchor_state = ANCHOR_STATE_AWAIT_RESPONSE_TX_CONFIRM;
-                            break;
                         } else {
-                            log_error("Failed to decode POLL frame");
-                            reset_anchor_state_machine(&g_current_anchor_state);
-                            break;
+                            log_error("anchor poll decode failed or frame type mismatch (len=%u)", frame_len);
                         }
                     } else {
-                        log_warn("ANCHOR_STATE_AWAIT_POLL_RX unexpected event 0x%08lX", notified_value);
-                        reset_anchor_state_machine(&g_current_anchor_state);
-                        break;
+                        log_error("anchor rx error waiting POLL (event=0x%08lX)", notified_value);
                     }
                 } else {
-                    log_warn("ANCHOR_STATE_AWAIT_POLL_RX timeout");
-                    reset_anchor_state_machine(&g_current_anchor_state);
-                    break;
+                    log_warn("anchor wait POLL notify timeout");
                 }
+                reset_anchor_state_machine(&g_current_anchor_state);
                 break;
             }
 
             case ANCHOR_STATE_AWAIT_RESPONSE_TX_CONFIRM: {
-                // Ensure RESP transmission completed before switching to RX
-                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(500)) == pdTRUE) {
-                    if (notified_value & UWB_EVENT_TX_DONE) {
-                        dwt_setrxtimeout(65535);
-                        dwt_rxenable(0);
-                        g_current_anchor_state = ANCHOR_STATE_AWAIT_FINAL_RX;
-                        break;
-                    } else {
-                        log_error("Response TX confirm unexpected event seq=%u event=0x%08lX", g_anchor_session.sequence_num, notified_value);
-                        reset_anchor_state_machine(&g_current_anchor_state);
-                        break;
-                    }
+                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(200)) == pdTRUE &&
+                    (notified_value & UWB_EVENT_TX_DONE)) {
+                    log_info("RESP sent seq=%u", g_anchor_session.sequence_num);
+                    dwt_setrxtimeout(65535);
+                    dwt_rxenable(0);
+                    g_current_anchor_state = ANCHOR_STATE_AWAIT_FINAL_RX;
                 } else {
-                    log_warn("ANCHOR_STATE_AWAIT_RESPONSE_TX_CONFIRM timeout seq=%u", g_anchor_session.sequence_num);
+                    log_error("RESP sent failed seq=%u", g_anchor_session.sequence_num);
                     reset_anchor_state_machine(&g_current_anchor_state);
-                    break;
                 }
                 break;
             }
 
             case ANCHOR_STATE_AWAIT_FINAL_RX: {
-                // Expect the tag FINAL frame and compute range once received
-                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(500)) == pdTRUE) {
+                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(300)) == pdTRUE) {
                     if (notified_value & UWB_EVENT_RX_DONE) {
                         uint16_t frame_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
                         dwt_readrxdata(dw1000rx_buffer, frame_len, 0);
@@ -488,30 +428,14 @@ void dw1000AnchorMain(void)
                         uwb_frame_t final_frame;
                         if (uwb_frame_decode(&final_frame, dw1000rx_buffer, frame_len) == 0 &&
                             final_frame.type == UWB_FRAME_TYPE_FINAL &&
-                            g_anchor_session.active &&
-                            final_frame.header.source_addr == g_anchor_session.tag_addr) {
-                            if (final_frame.header.sequence_num != g_anchor_session.sequence_num) {
-                                log_warn("FINAL sequence mismatch exp=%u got=%u", g_anchor_session.sequence_num, final_frame.header.sequence_num);
-                                reset_anchor_state_machine(&g_current_anchor_state);
-                                break;
-                            }
-
+                            final_frame.header.sequence_num == g_anchor_session.sequence_num) {
                             g_anchor_session.final_rx_ts = isr_timestamp_packet.rx;
 
-                            double distance = calculate_distance_from_timestamps(
-                                uwb_timestamp_to_u64(&final_frame.payload.final.poll_tx),
-                                uwb_timestamp_to_u64(&final_frame.payload.final.resp_rx),
-                                uwb_timestamp_to_u64(&final_frame.payload.final.final_tx),
-                                uwb_timestamp_to_u64(&g_anchor_session.poll_rx_ts),
-                                uwb_timestamp_to_u64(&g_anchor_session.resp_tx_ts),
-                                uwb_timestamp_to_u64(&g_anchor_session.final_rx_ts));
-                            twr_distance = distance;
-                            log_info("Anchor distance %.2f m -> tag 0x%04X seq=%u", distance, g_anchor_session.tag_addr, g_anchor_session.sequence_num);
-
-                            uwb_address_t self_addr = {.pan_id = local_device.pan_id, .short_addr = local_device.short_addr};
-                            uwb_address_t dest_addr = {.pan_id = final_frame.header.pan_id, .short_addr = final_frame.header.source_addr};
                             uwb_frame_t result_frame;
-                            uwb_frame_init(&result_frame, UWB_FRAME_TYPE_RESULT, &self_addr, &dest_addr, final_frame.header.sequence_num);
+                            uwb_address_t self_addr = {.pan_id = local_device.pan_id, .short_addr = local_device.short_addr};
+                            uwb_address_t dest_addr = {.pan_id = g_anchor_session.tag_pan_id, .short_addr = g_anchor_session.tag_addr};
+                            uwb_frame_init(&result_frame, UWB_FRAME_TYPE_RESULT, &self_addr, &dest_addr, g_anchor_session.sequence_num);
+
                             result_frame.payload.result.poll_tx      = final_frame.payload.final.poll_tx;
                             result_frame.payload.result.poll_rx      = g_anchor_session.poll_rx_ts;
                             result_frame.payload.result.resp_tx      = g_anchor_session.resp_tx_ts;
@@ -521,68 +445,52 @@ void dw1000AnchorMain(void)
                             result_frame.payload.result.anchor_pos_x = g_anchor_pos_x;
                             result_frame.payload.result.anchor_pos_y = g_anchor_pos_y;
 
-                            int frame_size = uwb_frame_encode(&result_frame, dw1000tx_buffer, sizeof(dw1000tx_buffer));
-                            if (frame_size < 0) {
-                                log_error("Failed to encode RESULT frame");
+                            int tx_len = uwb_frame_encode(&result_frame, dw1000tx_buffer, sizeof(dw1000tx_buffer));
+                            if (tx_len > 0) {
+                                dwt_writetxdata(tx_len, dw1000tx_buffer, 0);
+                                dwt_writetxfctrl(tx_len, 0);
+                                dwt_starttx(DWT_START_TX_IMMEDIATE);
+                                g_current_anchor_state = ANCHOR_STATE_AWAIT_RESULT_TX_CONFIRM;
+                                log_info("FINAL received seq=%u, sending RESULT", final_frame.header.sequence_num);
+                            } else {
+                                log_error("anchor result encode failed seq=%u", final_frame.header.sequence_num);
                                 reset_anchor_state_machine(&g_current_anchor_state);
-                                break;
                             }
-
-                            dwt_writetxdata(frame_size, dw1000tx_buffer, 0);
-                            dwt_writetxfctrl(frame_size, 0);
-                            dwt_starttx(DWT_START_TX_IMMEDIATE);
-
-                            g_current_anchor_state = ANCHOR_STATE_AWAIT_DISDATA_TX_CONFIRM;
-                            break;
                         } else {
-                            log_error("Invalid FINAL frame");
+                            log_error("anchor final decode/type/seq failed (len=%u)", frame_len);
                             reset_anchor_state_machine(&g_current_anchor_state);
-                            break;
                         }
-                    } else if (notified_value & UWB_EVENT_RX_TIMEOUT) {
-                        log_warn("ANCHOR_STATE_AWAIT_FINAL_RX timeout waiting for FINAL");
-                        reset_anchor_state_machine(&g_current_anchor_state);
-                        break;
                     } else {
-                        log_error("ANCHOR_STATE_AWAIT_FINAL_RX unexpected event seq=%u event=0x%08lX", g_anchor_session.sequence_num, notified_value);
+                        log_error("anchor wait FINAL error event=0x%08lX", notified_value);
                         reset_anchor_state_machine(&g_current_anchor_state);
-                        break;
                     }
                 } else {
-                    log_warn("ANCHOR_STATE_AWAIT_FINAL_RX timeout (no event) seq=%u", g_anchor_session.sequence_num);
+                    log_error("anchor wait FINAL timeout");
                     reset_anchor_state_machine(&g_current_anchor_state);
-                    break;
                 }
                 break;
             }
 
-            case ANCHOR_STATE_AWAIT_DISDATA_TX_CONFIRM: {
-                // Wait for RESULT frame completion before resetting session
-                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(500)) == pdTRUE) {
-                    if (notified_value & UWB_EVENT_TX_DONE) {
-                        log_info("RESULT frame sent to tag 0x%04X", g_anchor_session.tag_addr);
-                        Anchor_ResetSession();
-                        reset_anchor_state_machine(&g_current_anchor_state);
-                        break;
-                    } else {
-                        log_error("RESULT TX confirm unexpected event seq=%u event=0x%08lX", g_anchor_session.sequence_num, notified_value);
-                        reset_anchor_state_machine(&g_current_anchor_state);
-                        break;
-                    }
+            case ANCHOR_STATE_AWAIT_RESULT_TX_CONFIRM: {
+                if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(200)) == pdTRUE &&
+                    (notified_value & UWB_EVENT_TX_DONE)) {
+                    log_info("RESULT sent seq=%u", g_anchor_session.sequence_num);
                 } else {
-                    log_warn("ANCHOR_STATE_AWAIT_RESULT_TX timeout seq=%u", g_anchor_session.sequence_num);
-                    reset_anchor_state_machine(&g_current_anchor_state);
-                    break;
+                    log_error("RESULT sent failed seq=%u", g_anchor_session.sequence_num);
                 }
-                break;
-            }
-
-            default:
                 reset_anchor_state_machine(&g_current_anchor_state);
                 break;
+            }
+
+            default: {
+                reset_anchor_state_machine(&g_current_anchor_state);
+                break;
+            }
         }
+        osDelay(1);
     }
 }
+
 typedef struct {
     uint8_t frameCtrl[2];
     uint16_t pan_id;
@@ -594,9 +502,9 @@ void DW1000samplingtask(void *argument)
 
     dw1000samplingTaskNotifyHandle =
         xTaskGetCurrentTaskHandle();
-    UWB_DeviceInitFromConfig();
+    UWB_DeviceInitFromConfig(); // 初始化本机的配置数据
 
-    const app_config_t *cfg = AppConfig_Get();
+    const app_config_t *cfg = AppConfig_Get(); // 配置控制功能
     app_device_role_t role  = APP_DEVICE_ROLE_ANCHOR;
     if (cfg != NULL) {
         if (cfg->device_role == APP_DEVICE_ROLE_TAG || cfg->device_role == APP_DEVICE_ROLE_ANCHOR) {
@@ -619,7 +527,6 @@ void DW1000samplingtask(void *argument)
 
 void uwb_isr_handler(void)
 {
-    // DW1000 interrupt handler: capture timestamps and map status bits to task events
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
 
     UWB_Event_t event_to_notify = UWB_EVENT_NONE;
@@ -628,42 +535,27 @@ void uwb_isr_handler(void)
 
     status_reg = dwt_read32bitoffsetregFromISR(SYS_STATUS_ID, 0);
 
-    UBaseType_t saved = taskENTER_CRITICAL_FROM_ISR();
-    uwb_timestamp_read_rx_isr(&isr_timestamp_packet.rx);
-    uwb_timestamp_read_tx_isr(&isr_timestamp_packet.tx);
-    taskEXIT_CRITICAL_FROM_ISR(saved);
+    bool tx_done  = (status_reg & SYS_STATUS_TXFRS) != 0;
+    bool rx_ok    = (status_reg & SYS_STATUS_RXFCG) != 0;
+    bool err_bit  = (status_reg & (SYS_STATUS_RXRFTO | SYS_STATUS_RXPTO | SYS_STATUS_RXSFDTO |
+                                  SYS_STATUS_AFFREJ | SYS_STATUS_RXFCE | SYS_STATUS_RXPHE |
+                                  SYS_STATUS_RXRFSL)) != 0;
+    bool multiple = tx_done && rx_ok;
 
-    if (status_reg & SYS_STATUS_TXFRS) {
-
-        event_to_notify |= UWB_EVENT_TX_DONE;
-    }
-
-    if (status_reg & SYS_STATUS_RXFCG) {
-
-        event_to_notify |= UWB_EVENT_RX_DONE;
-    }
-
-    if (status_reg & SYS_STATUS_RXRFTO) {
-
-        event_to_notify |= UWB_EVENT_RX_TIMEOUT;
-    }
-    if (status_reg & SYS_STATUS_RXSFDTO) {
-
-        event_to_notify |= UWB_EVENT_SFD_DONE;
-    }
-    if (status_reg & SYS_STATUS_RXPTO) {
-
-        event_to_notify |= UWB_EVENT_PRE_DONE;
-    }
-
-    if (status_reg & SYS_STATUS_AFFREJ) {
-
-        event_to_notify |= UWB_EVENT_FRAME_REJECTED;
-    }
-
-    if (status_reg & (SYS_STATUS_RXFCE | SYS_STATUS_RXPHE | SYS_STATUS_RXRFSL)) {
-
-        event_to_notify |= UWB_EVENT_RX_ERROR;
+    if (!err_bit && !multiple) {
+        if (rx_ok) {
+            UBaseType_t saved = taskENTER_CRITICAL_FROM_ISR();
+            uwb_timestamp_read_rx_isr(&isr_timestamp_packet.rx);
+            taskEXIT_CRITICAL_FROM_ISR(saved);
+            event_to_notify = UWB_EVENT_RX_DONE;
+        } else if (tx_done) {
+            UBaseType_t saved = taskENTER_CRITICAL_FROM_ISR();
+            uwb_timestamp_read_tx_isr(&isr_timestamp_packet.tx);
+            taskEXIT_CRITICAL_FROM_ISR(saved);
+            event_to_notify = UWB_EVENT_TX_DONE;
+        }
+    } else {
+        event_to_notify = UWB_EVENT_RX_ERROR;
     }
 
     dwt_write32bitoffsetregFromISR(SYS_STATUS_ID, 0, status_reg);
@@ -718,30 +610,35 @@ void apply_dw1000_optimizations(const dwt_config_t *config)
     }
 }
 
-double calculate_distance_from_timestamps(uint64_t tag_poll_tx_ts, uint64_t tag_resp_rx_ts, uint64_t tag_final_tx_ts,
-                                          uint64_t anchor_poll_rx_ts, uint64_t anchor_resp_tx_ts, uint64_t anchor_final_rx_ts)
+// poll_tx, poll_rx, resp_tx, resp_rx, final_tx, final_rx
+double calculate_distance_from_timestamps_v2(uint64_t poll_tx_ts,
+                                             uint64_t poll_rx_ts,
+                                             uint64_t resp_tx_ts,
+                                             uint64_t resp_rx_ts,
+                                             uint64_t final_tx_ts,
+                                             uint64_t final_rx_ts)
 {
+    // 假设：get_timestamp_difference_u64(end, start)
+    // 返回的是 (end - start) 在 40bit 下做回绕处理后的无符号差值
+    double T_round_tag    = (double)get_timestamp_difference_u64(resp_rx_ts, poll_tx_ts);  // t4 - t1
+    double T_reply_anchor = (double)get_timestamp_difference_u64(resp_tx_ts, poll_rx_ts);  // t3 - t2
+    double T_round_anchor = (double)get_timestamp_difference_u64(final_rx_ts, resp_tx_ts); // t6 - t3
+    double T_reply_tag    = (double)get_timestamp_difference_u64(final_tx_ts, resp_rx_ts); // t5 - t4
 
-    double T_round_tag    = (double)get_timestamp_difference_u64(tag_resp_rx_ts, tag_poll_tx_ts);
-    double T_reply_anchor = (double)get_timestamp_difference_u64(anchor_resp_tx_ts, anchor_poll_rx_ts);
-    double T_round_anchor = (double)get_timestamp_difference_u64(anchor_final_rx_ts, anchor_resp_tx_ts);
-    double T_reply_tag    = (double)get_timestamp_difference_u64(tag_final_tx_ts, tag_resp_rx_ts);
-
-    double Tprop_ticks;
     double numerator   = (T_round_tag * T_round_anchor) - (T_reply_tag * T_reply_anchor);
     double denominator = T_round_tag + T_round_anchor + T_reply_tag + T_reply_anchor;
 
-    if (denominator == 0) {
-        return -1.0;
+    if (denominator == 0.0) {
+        return -1.0; // 错误情况，你也可以改成 0 或其它标记值
     }
 
-    Tprop_ticks = numerator / denominator;
+    double Tprop_ticks = numerator / denominator; // ToF，单位：DW1000 tick
+    Tprop_ticks        = fabs(Tprop_ticks);       // 取绝对值，防止出现负的 ToF
 
-    double Tprop_seconds = Tprop_ticks * DWT_TIME_UNITS;
+    double Tprop_seconds = Tprop_ticks * DWT_TIME_UNITS;   // tick -> 秒
+    double distance_m    = Tprop_seconds * SPEED_OF_LIGHT; // 秒 * m/s -> 米
 
-    double distance_meters = Tprop_seconds * SPEED_OF_LIGHT;
-
-    return distance_meters;
+    return distance_m;
 }
 
 #define RX_SOFTRESET_BIT_MASK   (1UL << 28)
@@ -749,17 +646,10 @@ double calculate_distance_from_timestamps(uint64_t tag_poll_tx_ts, uint64_t tag_
 
 void reset_tag_state_machine(Tag_State_t *current_tag_state)
 {
-    // Disable DW1000 interrupts while tearing down the state
-
-    uint32_t interrupt_mask = DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RFCE
-
-                              | DWT_INT_RXPTO | DWT_INT_SFDT
-
-        ;
+    uint32_t interrupt_mask = DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RFCE |
+                              DWT_INT_RXPTO | DWT_INT_SFDT;
 
     dwt_setinterrupt(interrupt_mask, 0);
-
-    dwt_forcetrxoff();
 
     uint32_t status_reg = dwt_read32bitreg(SYS_STATUS_ID);
     dwt_write32bitreg(SYS_STATUS_ID, status_reg);
@@ -769,7 +659,6 @@ void reset_tag_state_machine(Tag_State_t *current_tag_state)
     pmsc_ctrl0_value = dwt_read32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET);
 
     dwt_write32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET, pmsc_ctrl0_value & ~RX_SOFTRESET_BIT_MASK);
-    osDelay(2);
     dwt_write32bitoffsetreg(PMSC_ID, PMSC_CTRL0_OFFSET, (pmsc_ctrl0_value & ~ALL_SOFTRESET_BITS_MASK) | ALL_SOFTRESET_BITS_MASK);
 
     if (dw1000samplingTaskNotifyHandle != NULL) {
@@ -786,19 +675,12 @@ void reset_tag_state_machine(Tag_State_t *current_tag_state)
     dwt_setinterrupt(interrupt_mask, 1);
 }
 
-// Reset anchor side DW1000 into RX mode for the next ranging exchange
 void reset_anchor_state_machine(Anchor_State_t *current_anchor_state)
 {
-
-    uint32_t interrupt_mask = DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RFCE
-
-                              | DWT_INT_RXPTO | DWT_INT_SFDT
-
-        ;
+    uint32_t interrupt_mask = DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RFCE |
+                              DWT_INT_RXPTO | DWT_INT_SFDT;
 
     dwt_setinterrupt(interrupt_mask, 0);
-
-    dwt_forcetrxoff();
 
     uint32_t status_reg = dwt_read32bitreg(SYS_STATUS_ID);
     dwt_write32bitreg(SYS_STATUS_ID, status_reg);
@@ -818,6 +700,7 @@ void reset_anchor_state_machine(Anchor_State_t *current_anchor_state)
     }
 
     *current_anchor_state = ANCHOR_STATE_AWAIT_POLL_RX;
+
     Anchor_ResetSession();
 
     dwt_setinterrupt(interrupt_mask, 1);

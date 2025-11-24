@@ -18,14 +18,11 @@ typedef struct {
 
 // 来自中断的事件通知 (使用位掩码)
 typedef enum {
-    UWB_EVENT_NONE           = 0,
-    UWB_EVENT_TX_DONE        = (1 << 0), // 发送完成 0x01
-    UWB_EVENT_RX_DONE        = (1 << 1), // 接收成功 0x02
-    UWB_EVENT_RX_TIMEOUT     = (1 << 2), // 接收超时 0x04
-    UWB_EVENT_RX_ERROR       = (1 << 3), // 接收出错 0x08
-    UWB_EVENT_PRE_DONE       = (1 << 4), // 前导码超时 0x10
-    UWB_EVENT_SFD_DONE       = (1 << 5), // SFD超时  0x20
-    UWB_EVENT_FRAME_REJECTED = (1 << 6)  // 自动帧过滤拒绝事件 ,一个硬件错规则 0x40
+    UWB_EVENT_NONE     = 0,
+    UWB_EVENT_TX_DONE  = (1 << 0), // 发送完成 0x01
+    UWB_EVENT_RX_DONE  = (1 << 1), // 接收成功 0x02
+    UWB_EVENT_RX_ERROR = (1 << 2), // 接收出错 0x08
+
 } UWB_Event_t;
 
 // 这些数据是时间戳的40位数据
@@ -97,12 +94,9 @@ extern QueueHandle_t dw1000data_queue;
 
 void DW1000samplingtask(void *argument);
 int16_t clear_node_profile(uwb_node_profile_t *node_profile);
-double calculate_distance_from_timestamps(uint64_t tag_poll_tx_ts,
-                                          uint64_t tag_resp_rx_ts,
-                                          uint64_t tag_final_tx_ts,
-                                          uint64_t anchor_poll_rx_ts,
-                                          uint64_t anchor_resp_tx_ts,
-                                          uint64_t anchor_final_rx_ts);
+double calculate_distance_from_timestamps_v2(
+    uint64_t poll_tx_ts, uint64_t poll_rx_ts, uint64_t resp_tx_ts,
+    uint64_t resp_rx_ts, uint64_t final_tx_ts, uint64_t final_rx_ts);
 void UWBMssageInit(void);
 
 #endif

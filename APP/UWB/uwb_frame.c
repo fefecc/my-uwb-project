@@ -79,6 +79,7 @@ size_t uwb_frame_length(const uwb_frame_t *frame)
     return UWB_FRAME_MAC_HEADER_LEN + uwb_frame_payload_size(frame) + UWB_FRAME_FCS_LEN;
 }
 
+// 这个函数的返回值中包含了FCS校验的数据大小
 int uwb_frame_encode(const uwb_frame_t *frame, uint8_t *buffer, size_t buffer_len)
 {
     if (frame == NULL || buffer == NULL) {

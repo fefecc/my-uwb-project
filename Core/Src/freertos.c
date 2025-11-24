@@ -110,7 +110,7 @@ osThreadId_t dw1000samplingtaskHandle;
 const osThreadAttr_t dw1000sampling_attributes = {
     .name       = "dw1000sampling",
     .stack_size = 1024 * 4,
-    .priority   = (osPriority_t)osPriorityHigh,
+    .priority   = (osPriority_t)osPriorityRealtime,
 };
 
 void InitTask(void *argument);
@@ -172,8 +172,6 @@ void MX_FREERTOS_Init(void)
     /* USER CODE BEGIN RTOS_THREADS */
     /* add threads, ... */
     //  IMUDealHandle            = osThreadNew(IMUDataDealTask, NULL, &IMuUDeal_attributes);
-
-    defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
     const app_config_t *cfg      = AppConfig_Get();
     bool run_tag_sensors         = 0;

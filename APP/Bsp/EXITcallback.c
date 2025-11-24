@@ -27,13 +27,19 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     }
 
     else if (GPIO_Pin == USER_KEY_Pin) {
-        printf("key\r\n");
+        if (dw1000samplingTaskNotifyHandle != NULL) {
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            vTaskNotifyGiveFromISR(dw1000samplingTaskNotifyHandle,
+                                   &xHigherPriorityTaskWoken);
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        }
 
     }
 
     else if (GPIO_Pin == GPIO_PIN_8) {
         // 这个是dw1000的外部中断
         uwb_isr_handler();
+
     }
 
     else {

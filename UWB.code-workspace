@@ -15,7 +15,8 @@
             "cmsis_os.h": "c",
             "imusamplingtask.h": "c",
             "task.h": "c",
-            "queue.h": "c"
+            "queue.h": "c",
+            "type_traits": "c"
         },
         "cortex-debug.variableUseNaturalFormat": false
     },

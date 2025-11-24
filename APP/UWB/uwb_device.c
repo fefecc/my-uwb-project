@@ -6,49 +6,42 @@
 #include "DW1000samplingtask.h"
 #include "deca_device_api.h"
 
-static void BuildDefaultDwtConfig(dwt_config_t *cfg)
-{
-    if (cfg == NULL) {
-        return;
-    }
-    *cfg = (dwt_config_t){
-        .chan           = UWB_CFG_DEFAULT_CHANNEL,
-        .prf            = UWB_CFG_DEFAULT_PRF,
-        .txPreambLength = UWB_CFG_DEFAULT_PLEN,
-        .rxPAC          = UWB_CFG_DEFAULT_PAC,
-        .txCode         = UWB_CFG_DEFAULT_PREAMBLE_CODE,
-        .rxCode         = UWB_CFG_DEFAULT_PREAMBLE_CODE,
-        .nsSFD          = 1,
-        .dataRate       = UWB_CFG_DEFAULT_DATA_RATE,
-        .phrMode        = UWB_CFG_DEFAULT_PHR_MODE,
-        .sfdTO          = UWB_CFG_DEFAULT_SFD_TIMEOUT,
-    };
-}
+// Default DW1000 configuration (explicit values from library)
+static const dwt_config_t kDefaultDwtConfig = {
+    .chan           = 5,
+    .prf            = DWT_PRF_64M,
+    .txPreambLength = DWT_PLEN_1024,
+    .rxPAC          = DWT_PAC32,
+    .txCode         = 9,
+    .rxCode         = 9,
+    .nsSFD          = 1,
+    .dataRate       = DWT_BR_110K,
+    .phrMode        = DWT_PHRMODE_STD,
+    .sfdTO          = (1025 + 64 - 32),
+};
 
 extern dw1000_local_device_t local_device;
 
 void UWB_DeviceInitFromConfig(void)
 {
-    dwt_config_t hw_cfg;
-    BuildDefaultDwtConfig(&hw_cfg);
+    dwt_config_t hw_cfg = kDefaultDwtConfig;
 
-    uint16_t pan_id     = UWB_CFG_DEFAULT_PAN_ID;
-    uint16_t short_addr = UWB_CFG_DEFAULT_SHORT_ADDR;
+    // from app_config.c
+    uint16_t pan_id     = 0;
+    uint16_t short_addr = 0;
 
     const app_config_t *cfg = AppConfig_Get();
     if (cfg == NULL) {
-        cfg = AppConfig_GetDefaults();
-        log_warn("AppConfig unavailable, falling back to defaults");
+        log_warn("AppConfig unavailable, cannot init UWB device");
+        return;
     }
 
-    if (cfg != NULL) {
-        local_device.frameCtrl[0] = cfg->frame_ctrl[0];
-        local_device.frameCtrl[1] = cfg->frame_ctrl[1];
-        local_device.pan_id       = cfg->pan_id;
-        local_device.short_addr   = cfg->short_addr;
-        pan_id                    = cfg->pan_id;
-        short_addr                = cfg->short_addr;
-    }
+    local_device.frameCtrl[0] = cfg->frame_ctrl[0];
+    local_device.frameCtrl[1] = cfg->frame_ctrl[1];
+    local_device.pan_id       = cfg->pan_id;
+    local_device.short_addr   = cfg->short_addr;
+    pan_id                    = cfg->pan_id;
+    short_addr                = cfg->short_addr;
 
     BPhero_UWB_InitWithProfile(&hw_cfg, pan_id, short_addr);
 }
@@ -70,7 +63,6 @@ int configure_manual_max_tx_power(uint8_t channel, uint8_t prf)
 
     if (prf == PRF_16_MHZ) {
         switch (channel) {
-            case 1:
             case 2:
                 tx_power_value = 0x75757575;
                 break;
@@ -91,7 +83,6 @@ int configure_manual_max_tx_power(uint8_t channel, uint8_t prf)
         }
     } else if (prf == PRF_64_MHZ) {
         switch (channel) {
-            case 1:
             case 2:
                 tx_power_value = 0x67676767;
                 break;
