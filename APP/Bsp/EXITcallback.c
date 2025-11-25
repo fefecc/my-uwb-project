@@ -6,7 +6,6 @@
 #include "task.h"
 #include "DW1000samplingtask.h"
 #include "bphero_uwb.h"
-#include "mydw1000timestamp.h"
 #include "deca_device_api.h"
 #include "deca_spi.h"
 #include "deca_regs.h"

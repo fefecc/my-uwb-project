@@ -79,3 +79,9 @@ uint64_t uwb_timestamp_diff(const uwb_timestamp_t *end, const uwb_timestamp_t *s
     uint64_t start_val  = uwb_timestamp_to_u64(start);
     return (end_val - start_val) & mask;
 }
+
+uint64_t get_timestamp_difference_u64(uint64_t end_ts, uint64_t start_ts)
+{
+    const uint64_t mask_40 = (1ULL << 40) - 1ULL;
+    return (end_ts - start_ts) & mask_40;
+}

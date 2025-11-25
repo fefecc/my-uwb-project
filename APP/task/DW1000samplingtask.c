@@ -5,7 +5,6 @@
 #include "deca_device_api.h"
 #include "trilateration.h"
 #include "deca_regs.h"
-#include "mydw1000timestamp.h"
 #include "uwb_timestamp.h"
 #include "EXITcallback.h"
 #include "cmsis_os.h"
