@@ -80,7 +80,7 @@ static uwb_anchor_record_t g_anchor_table[UWB_ANCHOR_TABLE_SIZE] = {
 
 static uwb_anchor_record_t g_temp_anchor_record = {0};
 
-#define UWB_DELAY_MS 15U
+#define UWB_DELAY_MS 10U
 
 typedef struct {
     bool active;
@@ -171,8 +171,8 @@ void dw1000TagMain(void)
     while (1) {
         switch (g_current_tag_state) {
             case TAG_STATE_IDLE: {
-                //   ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-                osDelay(500);
+                //  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+                osDelay(30);
 
                 HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
 
@@ -180,7 +180,7 @@ void dw1000TagMain(void)
                 g_temp_anchor_record               = *active_record;
                 UWB_ResetAnchorTimestamps(&g_temp_anchor_record);
 
-                local_device.seqNum++;
+                local_device.seqNum++; // seq ++
 
                 uwb_address_t self_addr = {.pan_id = local_device.pan_id, .short_addr = local_device.short_addr};
                 uwb_address_t dest_addr = {.pan_id = local_device.pan_id, .short_addr = g_temp_anchor_record.short_addr};
@@ -188,6 +188,7 @@ void dw1000TagMain(void)
                 uwb_frame_init(&poll_frame, UWB_FRAME_TYPE_POLL, &self_addr, &dest_addr, local_device.seqNum);
 
                 int frame_size = uwb_frame_encode(&poll_frame, dw1000tx_buffer, sizeof(dw1000tx_buffer));
+
                 if (frame_size < 0) {
                     log_error("poll frame pack failed, seq = %u", local_device.seqNum);
                     reset_tag_state_machine(&g_current_tag_state);
@@ -205,7 +206,7 @@ void dw1000TagMain(void)
             case TAG_STATE_AWAIT_POLL_TX_CONFIRM: {
                 if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(100)) == pdTRUE &&
                     (notified_value & UWB_EVENT_TX_DONE)) {
-                    g_temp_anchor_record.poll_tx = isr_timestamp_packet.tx;
+                    g_temp_anchor_record.poll_tx = isr_timestamp_packet.tx; // 发送成功
                     dwt_setrxtimeout(65535);
                     dwt_rxenable(0);
                     g_current_tag_state = TAG_STATE_AWAIT_RESPONSE_RX;
