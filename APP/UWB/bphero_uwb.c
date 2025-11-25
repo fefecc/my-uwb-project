@@ -73,7 +73,6 @@ void BPhero_UWB_InitWithProfile(const dwt_config_t *user_cfg, uint16_t pan_id, u
 
     // configure_manual_max_tx_power(active_cfg.chan, active_cfg.prf);
 
-    uint32_t interrupt_mask = DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RFCE |
-                              DWT_INT_RXPTO | DWT_INT_SFDT; // enable interrupt
+    uint32_t interrupt_mask = DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RFCE; // enable interrupt
     dwt_setinterrupt(interrupt_mask, 1);
 }

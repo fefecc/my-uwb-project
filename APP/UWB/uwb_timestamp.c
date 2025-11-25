@@ -35,14 +35,19 @@ int uwb_timestamp_read_tx_isr(volatile uwb_timestamp_t *ts)
 
 uint64_t uwb_timestamp_to_u64(const uwb_timestamp_t *ts)
 {
-    return ts->value;
+    if (!ts) return 0;
+    uint64_t v = 0;
+    for (uint32_t i = 0; i < UWB_TIMESTAMP_LEN; ++i) {
+        v |= ((uint64_t)ts->bytes[i]) << (8U * i);
+    }
+    return v & ((1ULL << 40) - 1ULL);
 }
 
 void uwb_timestamp_from_u64(uint64_t value, uwb_timestamp_t *ts)
 {
     if (ts) {
         ts->value       = 0;
-        uint64_t masked = value & ((1ULL << 40) - 1ULL);
+        uint64_t masked = value & ((1ULL << 40) - 1ULL); // 40bits
         for (uint32_t i = 0; i < UWB_TIMESTAMP_LEN; ++i) {
             ts->bytes[i] = (uint8_t)(masked & 0xFFU);
             masked >>= 8;
@@ -53,12 +58,15 @@ void uwb_timestamp_from_u64(uint64_t value, uwb_timestamp_t *ts)
 uwb_timestamp_t uwb_timestamp_add_delay_ms(const uwb_timestamp_t *base, uint16_t delay_ms)
 {
     uwb_timestamp_t result;
-    uwb_timestamp_from_u64(0, &result);
+    uwb_timestamp_from_u64(0, &result); // clear timstamp
 
-    uint64_t base_val    = uwb_timestamp_to_u64(base);
-    double delay_units   = ((double)delay_ms / 1000.0) / UWB_DWT_TIME_UNITS;
-    uint64_t delay_ticks = (uint64_t)(delay_units);
-    uint64_t future      = (base_val + delay_ticks) % (1ULL << 40);
+    uint64_t base_val      = uwb_timestamp_to_u64(base);
+    double delay_units     = ((double)delay_ms / 1000.0) / UWB_DWT_TIME_UNITS;
+    uint64_t delay_ticks   = (uint64_t)(delay_units);
+    const uint64_t mask_40 = (1ULL << 40) - 1ULL;
+    uint64_t future        = (base_val + delay_ticks) & mask_40;
+
+    future &= ~((1ULL << 9) - 1ULL); // 对齐，低9位清零
 
     uwb_timestamp_from_u64(future, &result);
     return result;
