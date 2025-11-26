@@ -8,7 +8,7 @@
 
 // Default DW1000 configuration (explicit values from library)
 static const dwt_config_t kDefaultDwtConfig = {
-    .chan           = 5,
+    .chan           = 2,
     .prf            = DWT_PRF_64M,
     .txPreambLength = DWT_PLEN_1024,
     .rxPAC          = DWT_PAC32,

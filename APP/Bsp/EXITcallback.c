@@ -38,7 +38,6 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     else if (GPIO_Pin == GPIO_PIN_8) {
         // 这个是dw1000的外部中断
         uwb_isr_handler();
-
     }
 
     else {

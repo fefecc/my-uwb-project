@@ -29,7 +29,7 @@ extern srd_msg_dsss msg_f_send; // ranging message frame with 16-bit addresses
 #endif
 
 #ifndef RX_ANT_DLY
-#define RX_ANT_DLY 32950
+#define RX_ANT_DLY 32985 // 32950
 #endif
 
 extern uint8 rx_buffer[FRAME_LEN_MAX];

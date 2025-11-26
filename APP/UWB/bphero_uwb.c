@@ -63,7 +63,7 @@ void BPhero_UWB_InitWithProfile(const dwt_config_t *user_cfg, uint16_t pan_id, u
 
     dwt_configure(&active_cfg);
 
-    // apply_dw1000_optimizations(&active_cfg);
+    apply_dw1000_optimizations(&active_cfg);
 
     dwt_setrxantennadelay(RX_ANT_DLY);
     dwt_settxantennadelay(TX_ANT_DLY);
