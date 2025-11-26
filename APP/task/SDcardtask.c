@@ -10,6 +10,7 @@
 #include "stdio.h"
 #include "string.h"
 #include "task.h"
+#include "sdmmc.h"
 
 // 构造内存池的大小的构建，内存数据的分配
 #define SDLength     512
@@ -215,6 +216,28 @@ int16_t SDCardTaskFunc(void)
         return -1;
     }
     return 0;
+}
+
+void SDMMCTask(void *argument)
+{
+    /* USER CODE BEGIN SDMMCTask */
+    /* Infinite loop */
+    // 直接检测sd卡是否插上，如果没有不初始化，进入死循环,如果检测到插上则直接开始初始化，执行写入的代码
+    if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5) == GPIO_PIN_RESET) {
+        // 初始化SD卡，和数据流
+        MX_SDMMC1_SD_Init();
+        MX_FATFS_Init();
+        osDelay(5);
+        FatFs_Check();
+        SDCardTaskFunc();
+    }
+    // FatFs_FileTest();
+    // sd_wirte_IMU();
+
+    for (;;) {
+        osDelay(1);
+    }
+    /* USER CODE END SDMMCTask */
 }
 
 // 测试文件不要管

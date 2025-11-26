@@ -104,3 +104,11 @@ int16_t Imu_Init(void)
 
     return 0;
 }
+
+void IMUTask(void *argument)
+{
+    // imuDataDealTaskFunc();
+    for (;;) {
+        osDelay(1);
+    }
+}

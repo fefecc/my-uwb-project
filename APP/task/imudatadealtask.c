@@ -14,13 +14,13 @@ void imuDataDealTaskFunc(void)
 {
     /* USER CODE BEGIN imudatadealtask */
     IMUOrigData_t IMU_DatatoSD = {0};
-    double dw1000DataToSD;
+    // double dw1000DataToSD;
 
     /* Infinite loop */
     for (;;) {
         static MsgIMU_t msg = {0};
         // xQueueReceive(xIMUDataQueue, &IMU_DatatoSD, portMAX_DELAY);
-        xQueueReceive(dw1000data_queue, &dw1000DataToSD, portMAX_DELAY); // 暂时不添加imu数据
+        // xQueueReceive(dw1000data_queue, &dw1000DataToSD, portMAX_DELAY); // 暂时不添加imu数据
         msg.hdr.sync1   = 0xAA;
         msg.hdr.sync2   = 0x44;
         msg.hdr.sync3   = 0x55;
@@ -47,7 +47,7 @@ void imuDataDealTaskFunc(void)
         msg.body.accel[1] = IMU_DatatoSD.accel[1];
         msg.body.accel[2] = IMU_DatatoSD.accel[2];
 
-        msg.dw1000Msg.dw1000dis = dw1000DataToSD; // 保存数据
+        // msg.dw1000Msg.dw1000dis = dw1000DataToSD; // 保存数据
 
         msg.body.crc =
             CalculateCRC32((uint8_t *)&msg, sizeof(msg) - sizeof(msg.body.crc));

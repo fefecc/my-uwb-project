@@ -28,8 +28,6 @@ TaskHandle_t UM960samplingTaskNotifyHandle = NULL;
 // 2. 定义队列句柄
 QueueHandle_t gnss_data_queue = NULL;
 
-
-
 void UM960SamplingTaskFunc(void)
 {
     UM960samplingTaskNotifyHandle =
@@ -91,4 +89,23 @@ int16_t GNSSInit(void)
     // 开启空闲中断,循环解析的，中断不需要了
 
     return 0;
+}
+
+void GNSSTask(void *argument)
+{
+    /* USER CODE BEGIN GNSSTask */
+
+    // UM960SamplingTaskFunc();
+
+    /* Infinite loop */
+    for (;;) {
+        // ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        // UartRx_CopyToRB();
+
+        // ParseFrames();
+
+        osDelay(1);
+    }
+    /* USER CODE END GNSSTask */
 }
