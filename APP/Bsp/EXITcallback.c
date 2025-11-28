@@ -40,6 +40,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
         uwb_isr_handler();
     }
 
+    else if (GPIO_Pin == GPIO_PIN_0) {
+        // um960进行时间同步的操作
+
+    }
+
     else {
     }
 }

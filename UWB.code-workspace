@@ -16,7 +16,10 @@
             "imusamplingtask.h": "c",
             "task.h": "c",
             "queue.h": "c",
-            "type_traits": "c"
+            "type_traits": "c",
+            "freertos.h": "c",
+            "usart.h": "c",
+            "gnss_dma_buffer.h": "c"
         },
         "cortex-debug.variableUseNaturalFormat": false
     },

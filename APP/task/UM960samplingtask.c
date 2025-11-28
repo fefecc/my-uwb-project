@@ -4,108 +4,124 @@
 #include "gnss_parser.h"
 #include "stdio.h"
 #include "stm32h7xx_hal_dma.h"
+#include "string.h"
 
-#define gnss_parser_LEDGPIOx LED1_GPIO_Port
-#define gnss_parser_LEDGPINx LED1_Pin
-
+extern DMA_HandleTypeDef hdma_uart4_rx;
 extern DMA_HandleTypeDef hdma_usart3_rx;
-#define GNSSUSART_RX hdma_usart3_rx
+extern UART_HandleTypeDef huart4;
 extern UART_HandleTypeDef huart3;
-#define GNSSUartFx huart3
 
-// 定义缓冲区的长度
-// 为循环缓冲区分配静态内存
-#define RING_BUFFER_SIZE 2048
-static uint8_t gnss_rx_buffer[RING_BUFFER_SIZE];
+#define GNSSUART2_RX  hdma_uart4_rx
+#define GNSSUartF2    huart4
+#define GNSSUSART3_RX hdma_usart3_rx
+#define GNSSUartF3    huart3
 
-// 定义全局的循环缓冲区和解析器实例
-ring_buffer_t g_gnss_rb;
-gnss_parser_t g_gnss_parser;
+#define BUFFER_SIZE   1024
+static uint8_t gnss_rx_buffer[BUFFER_SIZE];
+static gnss_parser_t g_gnss_parser;
+static volatile uint16_t g_gnss_dma_length = 0;
 
 QueueHandle_t xUM960SamplingQueue          = NULL;
 TaskHandle_t UM960samplingTaskNotifyHandle = NULL;
+QueueHandle_t gnss_data_queue              = NULL;
 
-// 2. 定义队列句柄
-QueueHandle_t gnss_data_queue = NULL;
-
-void UM960SamplingTaskFunc(void)
-{
-    UM960samplingTaskNotifyHandle =
-        xTaskGetCurrentTaskHandle(); // 获取当前线程句柄
-
-    rb_init(&g_gnss_rb, gnss_rx_buffer, RING_BUFFER_SIZE);
-    gnss_parser_init(&g_gnss_parser, &g_gnss_rb, my_gnss_message_handler);
-
-    // b. 任务主循环
-    for (;;) {
-        // 调用解析器，它会处理缓冲区中所有的新数据
-        g_gnss_rb.head =
-            g_gnss_rb.size - __HAL_DMA_GET_COUNTER(&GNSSUSART_RX); // 更新头指针
-        gnss_parser_process(&g_gnss_parser);
-
-        // 让出CPU，避免空转。
-        // 10ms的延时意味着任务每秒最多轮询100次。
-        osDelay(10);
-    }
-}
-
-// length 数据长度
 void my_gnss_message_handler(uint16_t msg_id, const uint8_t *payload,
                              uint16_t length)
 {
-    // 根据消息ID来解析不同的消息
     switch (msg_id) {
-        case 0x0846: // 假设这是BESTPOSA消息的ID
+        case 0x0846: // BESTPOSA/BESTNAV 假定ID
             if (length == sizeof(bestnav_t)) {
                 const bestnav_t *nav = (const bestnav_t *)payload;
-                // 在这里使用解析出的数据，例如打印或更新全局变量
-                // 打印一些关键信息进行验证
-                //    HAL_GPIO_TogglePin(gnss_parser_LEDGPIOx, gnss_parser_LEDGPINx);
                 printf("--- BESTNAV Received ---\n");
                 printf("  Position Type: %u\n", (unsigned int)nav->pos_type);
                 printf("  Latitude:  %.8f\n", nav->lat);
                 printf("  Longitude: %.8f\n", nav->lon);
                 printf("  Height:    %.4f m\n", nav->hgt);
-                printf("  SVs Tracked: %u, SVs in Solution: %u\n", nav->svs_tracked,
-                       nav->svs_in_sol);
+                printf("  SVs Tracked: %u, SVs in Solution: %u\n",
+                       nav->svs_tracked, nav->svs_in_sol);
                 printf("--------------------------\n\n");
+            } else {
+                printf("parser failed!\r\n");
             }
             break;
-
-            // case 0x...: // 处理其他您关心的消息
-            //     break;
-
         default:
-            // 不关心的消息可以忽略
             break;
     }
 }
 
 int16_t GNSSInit(void)
 {
-    HAL_UART_Receive_DMA(&GNSSUartFx, gnss_rx_buffer,
-                         RING_BUFFER_SIZE); // 启动 DMA 循环接收
-    //__HAL_UART_ENABLE_IT(&GNSSUartFx, UART_IT_IDLE);
-    // 开启空闲中断,循环解析的，中断不需要了
+    gnss_parser_init(&g_gnss_parser, my_gnss_message_handler);
+
+    __HAL_UART_ENABLE_IT(&GNSSUartF3, UART_IT_IDLE);
+
+    HAL_UART_Receive_DMA(&GNSSUartF3, gnss_rx_buffer, BUFFER_SIZE);
 
     return 0;
 }
 
+void ClearBuffer(uint8_t *buffer, size_t len)
+{
+    if (!buffer || len == 0) {
+        return;
+    }
+    memset(buffer, 0, len);
+}
+
 void GNSSTask(void *argument)
 {
-    /* USER CODE BEGIN GNSSTask */
+    UM960samplingTaskNotifyHandle = xTaskGetCurrentTaskHandle();
 
-    // UM960SamplingTaskFunc();
+    GNSSInit();
 
-    /* Infinite loop */
-    for (;;) {
-        // ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    while (1) {
+        uint32_t dma_len = 0;
+        xTaskNotifyWait(0, 0, &dma_len, portMAX_DELAY); // 等待空闲中断通知并获取长度
 
-        // UartRx_CopyToRB();
-
-        // ParseFrames();
+        if (dma_len > 0) {
+            gnss_parser_process_block(&g_gnss_parser,
+                                      gnss_rx_buffer, dma_len);
+        }
+        ClearBuffer(gnss_rx_buffer, BUFFER_SIZE); // 清空缓冲区，等待下一次读取
+        HAL_UART_Receive_DMA(&GNSSUartF3, gnss_rx_buffer, BUFFER_SIZE);
 
         osDelay(1);
     }
-    /* USER CODE END GNSSTask */
+}
+
+void HAL_UART_IDLECallback(UART_HandleTypeDef *huart)
+{
+    if (huart != &GNSSUartF3) {
+        return;
+    }
+
+    uint32_t dma_len = (uint32_t)(BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&GNSSUartF3));
+
+    // 空闲中断触发：停止DMA并通知解析任务
+    HAL_UART_DMAStop(&GNSSUartF3);
+    if (UM960samplingTaskNotifyHandle != NULL) {
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        xTaskNotifyFromISR(UM960samplingTaskNotifyHandle,
+                           dma_len,
+                           eSetValueWithOverwrite,
+                           &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
+void GNSSIdleHandler(void)
+{
+    if (__HAL_UART_GET_FLAG(&GNSSUartF3, UART_FLAG_IDLE) != RESET) {
+        __HAL_UART_CLEAR_IDLEFLAG(&GNSSUartF3);
+        uint32_t dma_len = (uint32_t)(BUFFER_SIZE - __HAL_DMA_GET_COUNTER(&GNSSUartF3));
+        HAL_UART_DMAStop(&GNSSUartF3);
+        if (UM960samplingTaskNotifyHandle != NULL) {
+            BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+            xTaskNotifyFromISR(UM960samplingTaskNotifyHandle,
+                               dma_len,
+                               eSetValueWithOverwrite,
+                               &xHigherPriorityTaskWoken);
+            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+        }
+    }
 }

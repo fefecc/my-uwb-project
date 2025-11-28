@@ -7,6 +7,29 @@
 #include "task.h"
 
 typedef struct __attribute__((packed)) {
+    uint8_t sync1;   // 0  十六进制 0xAA
+    uint8_t sync2;   // 1  十六进制 0x44
+    uint8_t sync3;   // 2  十六进制 0xB5
+    uint8_t cpuIdle; // 3  CPU idle 0-100
+
+    uint16_t messageId;     // 4  Message ID (USHORT)
+    uint16_t messageLength; // 6  Message Length (USHORT)
+
+    uint8_t timeRef;    // 8  时间系统 GPST / BDST
+    uint8_t timeStatus; // 9  Time Status
+
+    uint16_t wn; // 10 时间周 (USHORT)
+    uint32_t ms; // 12 周内毫秒 (ULONG)
+
+    uint32_t version; // 16 Release version (ULONG)
+
+    uint8_t reserved; // 20 保留
+    uint8_t leapSec;  // 21 闰秒
+    uint16_t delayMs; // 22 数据输出延迟 (USHORT)
+} header_t;
+
+typedef struct __attribute__((packed)) {
+    header_t header;
     uint32_t p_sol_status;
     uint32_t pos_type;
     double lat;
@@ -53,8 +76,8 @@ int16_t GNSSInit(void);
 void IRQHandlerFunc(void);
 void my_gnss_message_handler(uint16_t msg_id, const uint8_t *payload,
                              uint16_t length);
-void UM960SamplingTaskFunc(void);
 void GNSSTask(void *argument);
 void DW1000samplingtask(void *argument);
+void GNSSIdleHandler(void);
 
 #endif
