@@ -13,7 +13,7 @@ static uint32_t CalculateCRC32(uint8_t *buf, uint8_t size);
 void imuDataDealTaskFunc(void)
 {
     /* USER CODE BEGIN imudatadealtask */
-    IMUOrigData_t IMU_DatatoSD = {0};
+    imu_record_t IMU_DatatoSD = {0};
     // double dw1000DataToSD;
 
     /* Infinite loop */
@@ -30,22 +30,22 @@ void imuDataDealTaskFunc(void)
         msg.hdr.timeRef = 0;
 
         msg.hdr.timeStatus = 0;
-        msg.hdr.time       = IMU_DatatoSD.sec;
-        msg.hdr.sec        = IMU_DatatoSD._50us;
-        msg.hdr.version    = 0;
-        msg.hdr.leapSec    = 0;
-        msg.hdr.delayMs    = 0;
+        // msg.hdr.time       = IMU_DatatoSD.ms;
+        // msg.hdr.sec        = IMU_DatatoSD._50us;
+        msg.hdr.version = 0;
+        msg.hdr.leapSec = 0;
+        msg.hdr.delayMs = 0;
 
         msg.body.sensor      = 0;
         msg.body.sensitivity = (asm_config.g_fs << 8) | asm_config.xl_fs;
 
-        msg.body.gyro[0] = IMU_DatatoSD.gyro[0];
-        msg.body.gyro[1] = IMU_DatatoSD.gyro[1];
-        msg.body.gyro[2] = IMU_DatatoSD.gyro[2];
+        msg.body.gyro[0] = IMU_DatatoSD.data.gyro[0];
+        msg.body.gyro[1] = IMU_DatatoSD.data.gyro[1];
+        msg.body.gyro[2] = IMU_DatatoSD.data.gyro[2];
 
-        msg.body.accel[0] = IMU_DatatoSD.accel[0];
-        msg.body.accel[1] = IMU_DatatoSD.accel[1];
-        msg.body.accel[2] = IMU_DatatoSD.accel[2];
+        msg.body.accel[0] = IMU_DatatoSD.data.accel[0];
+        msg.body.accel[1] = IMU_DatatoSD.data.accel[1];
+        msg.body.accel[2] = IMU_DatatoSD.data.accel[2];
 
         // msg.dw1000Msg.dw1000dis = dw1000DataToSD; // 保存数据
 

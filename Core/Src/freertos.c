@@ -62,9 +62,9 @@ extern TIM_HandleTypeDef htim16;
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
-  .stack_size = 128 * 4,
-  .priority = (osPriority_t) osPriorityNormal,
+    .name       = "defaultTask",
+    .stack_size = 128 * 4,
+    .priority   = (osPriority_t)osPriorityNormal,
 };
 
 /* Private function prototypes -----------------------------------------------*/
@@ -119,44 +119,46 @@ void StartDefaultTask(void *argument);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
 /**
-  * @brief  FreeRTOS initialization
-  * @param  None
-  * @retval None
-  */
-void MX_FREERTOS_Init(void) {
-  /* USER CODE BEGIN Init */
+ * @brief  FreeRTOS initialization
+ * @param  None
+ * @retval None
+ */
+void MX_FREERTOS_Init(void)
+{
+    /* USER CODE BEGIN Init */
 
-  /* USER CODE END Init */
+    /* USER CODE END Init */
 
-  /* USER CODE BEGIN RTOS_MUTEX */
+    /* USER CODE BEGIN RTOS_MUTEX */
     /* add mutexes, ... */
 
-  /* USER CODE END RTOS_MUTEX */
+    /* USER CODE END RTOS_MUTEX */
 
-  /* USER CODE BEGIN RTOS_SEMAPHORES */
+    /* USER CODE BEGIN RTOS_SEMAPHORES */
     /* add semaphores, ... */
 
-  /* USER CODE END RTOS_SEMAPHORES */
+    /* USER CODE END RTOS_SEMAPHORES */
 
-  /* USER CODE BEGIN RTOS_TIMERS */
+    /* USER CODE BEGIN RTOS_TIMERS */
     /* start timers, add new ones, ... */
 
-  /* USER CODE END RTOS_TIMERS */
+    /* USER CODE END RTOS_TIMERS */
 
-  /* USER CODE BEGIN RTOS_QUEUES */
+    /* USER CODE BEGIN RTOS_QUEUES */
     /* add queues, ... */
+    xIMUDataQueue = xQueueCreate(128, sizeof(imu_record_t));
 
-    gnss_data_queue = xQueueCreate(10, sizeof(GNSS_Message_t));
+    xUM960SamplingQueue = xQueueCreate(16, sizeof(gnss_fusion_record_t));
 
     dw1000data_queue = xQueueCreate(64, sizeof(double)); // 发送距离数据
 
-  /* USER CODE END RTOS_QUEUES */
+    /* USER CODE END RTOS_QUEUES */
 
-  /* Create the thread(s) */
-  /* creation of defaultTask */
-  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+    /* Create the thread(s) */
+    /* creation of defaultTask */
+    defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
-  /* USER CODE BEGIN RTOS_THREADS */
+    /* USER CODE BEGIN RTOS_THREADS */
 
     const app_config_t *cfg = AppConfig_Get();
 
@@ -164,12 +166,12 @@ void MX_FREERTOS_Init(void) {
 
         log_info("Sensor tasks enabled for TAG role");
 
-        InitHandle  = osThreadNew(InitTask, NULL, &Init_attributes);
-        IMUHandle   = osThreadNew(IMUTask, NULL, &IMU_attributes);
-        SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
-        GNSSHandle  = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
-        // dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);、
-        dw1000samplingtaskHandle = NULL; // 暂时关闭，调试gnss代码
+        InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
+        IMUHandle                = osThreadNew(IMUTask, NULL, &IMU_attributes);
+        SDMMCHandle              = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
+        GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
+        dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
+
     }
 
     else if (cfg->device_role == APP_DEVICE_ROLE_ANCHOR) {
@@ -177,11 +179,10 @@ void MX_FREERTOS_Init(void) {
         log_info("Sensor tasks enabled for ANCHOR role");
 
         InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
-        dw1000samplingtaskHandle = NULL;
-        // dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
-        IMUHandle   = NULL;
-        SDMMCHandle = NULL;
-        GNSSHandle  = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
+        dw1000samplingtaskHandle = NULL; // osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
+        IMUHandle                = osThreadNew(IMUTask, NULL, &IMU_attributes);
+        SDMMCHandle              = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
+        GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
 
     } else {
 
@@ -194,12 +195,11 @@ void MX_FREERTOS_Init(void) {
         GNSSHandle               = NULL;
     }
 
-  /* USER CODE END RTOS_THREADS */
+    /* USER CODE END RTOS_THREADS */
 
-  /* USER CODE BEGIN RTOS_EVENTS */
+    /* USER CODE BEGIN RTOS_EVENTS */
     /* add events, ... */
-  /* USER CODE END RTOS_EVENTS */
-
+    /* USER CODE END RTOS_EVENTS */
 }
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -211,13 +211,13 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
-  /* USER CODE BEGIN StartDefaultTask */
+    /* USER CODE BEGIN StartDefaultTask */
 
     /* Infinite loop */
     for (;;) {
         osDelay(1);
     }
-  /* USER CODE END StartDefaultTask */
+    /* USER CODE END StartDefaultTask */
 }
 
 /* Private application code --------------------------------------------------*/
@@ -234,4 +234,3 @@ void InitTask(void *argument)
     osThreadTerminate(osThreadGetId());
 }
 /* USER CODE END Application */
-

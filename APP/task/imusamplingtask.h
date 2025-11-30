@@ -6,16 +6,22 @@
 #include "main.h"
 #include "queue.h"
 #include "task.h"
+#include "timestamp.h"
+#include "timestamp.h"
 
 #define asm330_id 0x6B
 
-// IMU原始数据结构体
-typedef struct {
+// IMU原始数据
+typedef struct __attribute__((packed)) {
     int16_t accel[3];
     int16_t gyro[3];
-    int64_t sec;
-    float _50us;
 } IMUOrigData_t;
+
+// 带时间戳的IMU记录
+typedef struct __attribute__((packed)) {
+    utc_global_timestamp_t ts;
+    IMUOrigData_t data;
+} imu_record_t;
 
 typedef struct {
     asm330lhh_odr_xl_t xl_odr;

@@ -10,6 +10,7 @@
 #include "deca_spi.h"
 #include "deca_regs.h"
 #include "stdio.h"
+#include "timestamp.h"
 
 extern void uwb_isr_handler(void);
 
@@ -42,6 +43,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 
     else if (GPIO_Pin == GPIO_PIN_0) {
         // um960进行时间同步的操作
+        PPS_IRQHandler();
 
     }
 

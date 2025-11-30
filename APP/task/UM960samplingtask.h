@@ -5,6 +5,7 @@
 #include "main.h"
 #include "queue.h"
 #include "task.h"
+#include "timestamp.h"
 
 typedef struct __attribute__((packed)) {
     uint8_t sync1;   // 0  十六进制 0xAA
@@ -62,18 +63,35 @@ typedef struct __attribute__((packed)) {
     float hor_spd_std;
 } bestnav_t;
 
-// 1. 定义消息的结构
-typedef struct {
-    uint8_t *pData; // 指向接收到的数据的指针
-    size_t length;  // 这批数据的长度
-} GNSS_Message_t;
+// GNSS融合数据（不含时间戳）
+typedef struct __attribute__((packed)) {
+    double lat;
+    double lon;
+    double hgt;
+    uint32_t datum_id;
+
+    float lat_std;
+    float lon_std;
+    float hgt_std;
+
+    uint32_t p_sol_status;
+    uint32_t pos_type;
+    float diff_age;
+    float sol_age;
+    uint8_t svs_tracked;
+    uint8_t svs_in_sol;
+} gnss_fusion_msg_t;
+
+// 带时间戳的GNSS融合记录
+typedef struct __attribute__((packed)) {
+    utc_global_timestamp_t ts; // 时间戳
+    gnss_fusion_msg_t data;    // GNSS融合数据
+} gnss_fusion_record_t;
 
 extern QueueHandle_t xUM960SamplingQueue;
 extern TaskHandle_t UM960samplingTaskNotifyHandle;
-extern QueueHandle_t gnss_data_queue;
 
 int16_t GNSSInit(void);
-void IRQHandlerFunc(void);
 void my_gnss_message_handler(uint16_t msg_id, const uint8_t *payload,
                              uint16_t length);
 void GNSSTask(void *argument);

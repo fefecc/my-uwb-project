@@ -7,6 +7,7 @@
 #include "string.h"
 #include "task.h"
 #include "timestamptask.h"
+#include "timestamp.h"
 
 extern stmdev_ctx_t dev_ctx; // imu设备
 
@@ -21,47 +22,10 @@ asm_conf asm_config = {.xl_odr = ASM330LHH_XL_ODR_208Hz,
 
 static uint8_t dmaBuffer[12] __ALIGNED(4); // 读入数据的缓存区
 
-static IMUOrigData_t imuData;       // imu原始数据
-static timestamp_def timestampOrig; // 时间戳原始数据
+static imu_record_t imuRecord; // IMU记录（含时间戳）
 
 QueueHandle_t xIMUDataQueue              = NULL; // 创建队列来完成数据的传输
 TaskHandle_t imusamplingTaskNotifyHandle = NULL; // 创建imu采样线程句柄
-
-int16_t IMUSamplingTaskFunc(void *argument)
-{
-    imusamplingTaskNotifyHandle =
-        xTaskGetCurrentTaskHandle(); // 获取当前线程句柄
-
-    static int16_t IMUInitResult;
-
-    IMUInitResult = Imu_Init();
-
-    while (!IMUInitResult) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        asm330lhh_acceleration_raw_get(&dev_ctx,
-                                       (int16_t *)dmaBuffer); // 读取加速度计
-        asm330lhh_angular_rate_raw_get(&dev_ctx,
-                                       (int16_t *)(dmaBuffer + 6)); // 读取陀螺仪
-
-        memcpy(imuData.accel, dmaBuffer, 6);
-        memcpy(imuData.gyro, dmaBuffer + 6, 6);
-
-        timestampOrig = GetCurrentTimestamp();
-        imuData.sec   = timestampOrig.sec;
-        imuData._50us = timestampOrig._50us;
-
-        //  BaseType_t Xsendresult = xQueueSend(xIMUDataQueue, &imuData, 0);
-        // if (Xsendresult != pdPASS) {
-        //     printf("sampling queue full\r\n");
-        // }
-        osDelay(1);
-    }
-
-    for (;;) {
-    }
-
-    return 0;
-}
 
 // 初始化，如果有系统的存在，请在系统初始化之前完成初始化
 int16_t Imu_Init(void)
@@ -107,7 +71,33 @@ int16_t Imu_Init(void)
 
 void IMUTask(void *argument)
 {
-    // imuDataDealTaskFunc();
+    imusamplingTaskNotifyHandle =
+        xTaskGetCurrentTaskHandle(); // 获取当前线程句柄
+
+    static int16_t IMUInitResultFlag;
+
+    IMUInitResultFlag = Imu_Init();
+
+    while (!IMUInitResultFlag) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        asm330lhh_acceleration_raw_get(&dev_ctx,
+                                       (int16_t *)dmaBuffer); // 读取加速度计
+        asm330lhh_angular_rate_raw_get(&dev_ctx,
+                                       (int16_t *)(dmaBuffer + 6)); // 读取陀螺仪
+
+        memcpy(imuRecord.data.accel, dmaBuffer, 6);
+        memcpy(imuRecord.data.gyro, dmaBuffer + 6, 6);
+
+        imuRecord.ts = gettimestamp();
+
+        BaseType_t Xsendresult = xQueueSend(xIMUDataQueue, &imuRecord, 0);
+        if (Xsendresult != pdPASS) {
+            printf("sampling queue full\r\n");
+        }
+
+        osDelay(1);
+    }
+
     for (;;) {
         osDelay(1);
     }

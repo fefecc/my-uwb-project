@@ -27,6 +27,7 @@
 #include "stdio.h"
 #include "task.h"
 #include "UM960samplingtask.h"
+#include "timestamp.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -357,7 +358,7 @@ void UART4_IRQHandler(void)
 void TIM16_IRQHandler(void)
 {
     /* USER CODE BEGIN TIM16_IRQn 0 */
-
+    timestamp_tick_irq(); // 本地时钟
     /* USER CODE END TIM16_IRQn 0 */
     HAL_TIM_IRQHandler(&htim16);
     /* USER CODE BEGIN TIM16_IRQn 1 */

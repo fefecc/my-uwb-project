@@ -2,6 +2,17 @@
 #define _SDCARD_H_
 
 #include "main.h"
+#include "UM960samplingtask.h"
+#include "imusamplingtask.h"
+#include "timestamp.h"
+
+// SD写入融合数据封装（可扩展 UWB 等）
+typedef struct {
+    utc_global_timestamp_t timestamp; // 全局时间戳
+    gnss_fusion_msg_t gnss; // GNSS融合数据
+    IMUOrigData_t imu;      // IMU原始数据
+    // 预留: 后续可添加 UWB 等其他传感器数据
+} sd_fusion_record_t;
 
 void FatFs_Check(void);     // 判断FatFs是否挂载成功，若没有创建FatFs则格式化SD卡
 void FatFs_GetVolume(void); // 计算设备的容量，包括总容量和剩余容量
@@ -10,5 +21,6 @@ void FatFs_GetVolume(void); // 计算设备的容量，包括总容量和剩余�
 int16_t _512ByteFromImuDataFunc(void);
 int16_t SDCardTaskFunc(void);
 void SDMMCTask(void *argument);
+void PackResult(void);
 
 #endif /* _SDCARD_H_ */

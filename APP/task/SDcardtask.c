@@ -6,6 +6,8 @@
 #include "ff.h"
 #include "ffconf.h"
 #include "imudatadealtask.h"
+#include "imusamplingtask.h"
+#include "UM960samplingtask.h"
 #include "queue.h"
 #include "stdio.h"
 #include "string.h"
@@ -19,10 +21,48 @@
 #define SDLEDGPIOx   LED0_GPIO_Port
 #define SDLEDPINx    LED0_Pin
 
+// 排序用FIFO（按时间戳升序）
+#define SD_FUSION_FIFO_CAP 1024
+typedef struct {
+    sd_fusion_record_t *buf;
+    uint16_t capacity;
+    uint16_t head; // 写入位置
+    uint16_t tail; // 读出位置
+    uint16_t count;
+} sd_fusion_fifo_t;
+
+static sd_fusion_record_t s_fifo_storage[SD_FUSION_FIFO_CAP];
+
+static sd_fusion_fifo_t s_fifo = {
+    .buf      = s_fifo_storage,
+    .capacity = SD_FUSION_FIFO_CAP,
+    .head     = 0,
+    .tail     = 0,
+    .count    = 0,
+};
+
+static void fifo_insert(const sd_fusion_record_t *rec)
+{
+    if (!rec) {
+        return;
+    }
+
+    if (s_fifo.count >= s_fifo.capacity) {
+        // 丢弃最旧：尾指针前移一位
+        s_fifo.tail = (s_fifo.tail + 1) % s_fifo.capacity;
+        s_fifo.count--;
+        printf("sort fifo full\r\n");
+    }
+
+    s_fifo.buf[s_fifo.head] = *rec;
+    s_fifo.head             = (s_fifo.head + 1) % s_fifo.capacity;
+    s_fifo.count++;
+}
+
 //	函数：FatFs_Check
 //	功能：进行FatFs文件系统的挂载
 
-void FatFs_Check(void) // 判断FatFs是否挂载成功，若没有创建FatFs则格式化SD卡
+void FatFs_Check(void) // 判断Sd是否挂载在fatfs总线上
 {
     BYTE work[_MAX_SS];
     uint8_t MyFile_Res;
@@ -71,78 +111,6 @@ void FatFs_GetVolume(void) // 计算设备容量
     printf("SD剩余：%ldMB\r\n", SD_FreeCapacity);
 }
 
-// int16_t _512ByteFromImuDataFunc(void)
-// {
-//     FIL MyFile; // 文件对象
-
-//     UINT MyFile_Num; // 写入数据的长度
-
-//     uint8_t MyFile_Res; // 文件函数的返回值检测
-
-//     static BYTE MyFile_WriteBuffer[512] = {0}; // 要写入的数据
-
-//     static BYTE *FileWriteBufferPoint;
-
-//     static MsgIMU_t MsgSD = {0};
-
-//     uint16_t length = 0;
-
-//     MyFile_Res =
-//         f_open(&MyFile, "uwbdata.txt",
-//                FA_CREATE_ALWAYS | FA_WRITE); // 打开文件，若不存在则创建该文件
-
-//     if (MyFile_Res == FR_OK) {
-//         printf("文件打开/创建成功，准备写入数据...\r\n");
-
-//         FileWriteBufferPoint = &MyFile_WriteBuffer[0];
-
-//         while (1) {
-//             xQueueReceive(IMUDataToSDTaskQueue, &MsgSD, portMAX_DELAY);
-//             //(&MyFile_WriteBuffer[511] - FileWriteBufferPoint) <= sizeof(MsgIMU_t)
-//             if ((sizeof(MyFile_WriteBuffer) -
-//                  (FileWriteBufferPoint - MyFile_WriteBuffer)) >= sizeof(MsgIMU_t)) {
-//                 memcpy(FileWriteBufferPoint, &MsgSD, sizeof(MsgIMU_t));
-//                 FileWriteBufferPoint = FileWriteBufferPoint + sizeof(MsgIMU_t);
-//             }
-
-//             else {
-//                 length = sizeof(MyFile_WriteBuffer) -
-//                          (FileWriteBufferPoint - MyFile_WriteBuffer);
-
-//                 memcpy(FileWriteBufferPoint, &MsgSD, length);
-//                 MyFile_Res = f_write(&MyFile, MyFile_WriteBuffer,
-//                                      sizeof(MyFile_WriteBuffer), &MyFile_Num);
-//                 f_sync(&MyFile);
-
-//                 HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
-
-//                 FileWriteBufferPoint = &MyFile_WriteBuffer[0];
-//                 memcpy(FileWriteBufferPoint, ((uint8_t *)&MsgSD) + length,
-//                        sizeof(MsgIMU_t) - length);
-//                 FileWriteBufferPoint = &MyFile_WriteBuffer[0] + sizeof(MsgSD) - length;
-//             }
-
-//             if (FileWriteBufferPoint == &MyFile_WriteBuffer[511]) {
-//                 MyFile_Res =
-//                     f_write(&MyFile, MyFile_WriteBuffer, sizeof(MyFile_WriteBuffer),
-//                             &MyFile_Num); // 向文件写入数据
-//                 f_sync(&MyFile);
-//                 HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_4);
-//                 FileWriteBufferPoint = &MyFile_WriteBuffer[0];
-//             }
-//         }
-
-//         f_close(&MyFile); // 关闭文件
-
-//     }
-
-//     else {
-//         printf("文件打开/创建失败...\r\n");
-//         return -1;
-//     }
-//     return 0;
-// }
-
 int16_t SDCardTaskFunc(void)
 {
     static MsgIMU_t MsgSD = {0}; // 数据包结构
@@ -167,14 +135,14 @@ int16_t SDCardTaskFunc(void)
     }
 
     MyFile_Res = f_open(
-        &MyFile, "IMUNewData.txt",
+        &MyFile, "test11.29.txt",
         FA_CREATE_ALWAYS | FA_WRITE); // 打开文件，若不存在,则在sd卡中，创建文件
 
     if (MyFile_Res == FR_OK) {
         printf("文件打开/创建成功，准备写入数据...\r\n");
 
         while (1) {
-            xQueueReceive(IMUDataToSDTaskQueue, &MsgSD, portMAX_DELAY);
+            // xQueueReceive(IMUDataToSDTaskQueue, &MsgSD, portMAX_DELAY);
             FileWriteBufferPoint = (uint8_t *)&MsgSD;
             RB_Write(&rb, FileWriteBufferPoint, sizeof(MsgIMU_t));
 
@@ -218,6 +186,31 @@ int16_t SDCardTaskFunc(void)
     return 0;
 }
 
+void PackResult(void)
+{
+    // 读取GNSS队列（非阻塞）
+    gnss_fusion_record_t gnss_rec;
+    while (xUM960SamplingQueue &&
+           xQueueReceive(xUM960SamplingQueue, &gnss_rec, 0) == pdTRUE) {
+        sd_fusion_record_t rec = {0};
+        rec.timestamp          = gnss_rec.ts;
+        rec.gnss               = gnss_rec.data;
+        memset(&rec.imu, 0, sizeof(rec.imu));
+        fifo_insert(&rec);
+    }
+
+    // 读取IMU队列（非阻塞）
+    imu_record_t imu_rec;
+    while (xIMUDataQueue &&
+           xQueueReceive(xIMUDataQueue, &imu_rec, 0) == pdTRUE) {
+        sd_fusion_record_t rec = {0};
+        rec.timestamp          = imu_rec.ts;
+        memset(&rec.gnss, 0, sizeof(rec.gnss));
+        rec.imu = imu_rec.data;
+        fifo_insert(&rec);
+    }
+}
+
 void SDMMCTask(void *argument)
 {
     /* USER CODE BEGIN SDMMCTask */
@@ -229,156 +222,39 @@ void SDMMCTask(void *argument)
         MX_FATFS_Init();
         osDelay(5);
         FatFs_Check();
-        SDCardTaskFunc();
+
+        // 简单写入测试：创建文件 test11.29.txt 并写入 "helloworld"
+        FIL file;
+        UINT written    = 0;
+        const char *msg = "helloworld";
+        FRESULT fr      = f_open(&file, "test11.29.txt", FA_CREATE_ALWAYS | FA_WRITE);
+        if (fr == FR_OK) {
+            while (1) {
+                PackResult();
+                osDelay(1);
+            }
+
+            if (s_fifo.count > 0) {
+                UINT fusion_bytes   = s_fifo.count * sizeof(sd_fusion_record_t);
+                UINT fusion_written = 0;
+                fr                  = f_write(&file, s_fifo.buf, fusion_bytes, &fusion_written);
+                s_fifo.count        = 0;
+                if (fr != FR_OK || fusion_written != fusion_bytes) {
+                    printf("SD 写入融合数据失败, fr=%d, wrote=%u\r\n", fr,
+                           (unsigned int)fusion_written);
+                }
+            }
+            f_write(&file, msg, strlen(msg), &written);
+            f_sync(&file);
+            f_close(&file);
+            printf("SD 写入测试完成: %u bytes\r\n", (unsigned int)written);
+        } else {
+            printf("SD 写入测试失败, f_open err=%d\r\n", fr);
+        }
     }
-    // FatFs_FileTest();
-    // sd_wirte_IMU();
 
     for (;;) {
         osDelay(1);
     }
     /* USER CODE END SDMMCTask */
 }
-
-// 测试文件不要管
-
-// //	函数：FatFs_FileTest
-// //	功能：进行文件写入和读取测试
-// //
-
-// uint8_t FatFs_FileTest(void)  // 文件创建和写入测试
-// {
-//   uint8_t i = 0;
-//   uint16_t BufferSize = 0;
-//   uint8_t state = 0;
-//   uint8_t MyFile_Res;
-//   FIL MyFile;                         // 文件对象
-//   UINT MyFile_Num;                    //	数据长度
-//   BYTE MyFile_WriteBuffer[20] = {0};  // 要写入的数据
-//   BYTE MyFile_ReadBuffer[1024];       // 要读出的数据
-
-//   printf("-------------FatFs 文件创建和写入测试---------------\r\n");
-
-//   MyFile_Res =
-//       f_open(&MyFile, "0:FatFs Test.txt",
-//              FA_CREATE_ALWAYS | FA_WRITE);  //
-//              打开文件，若不存在则创建该文件
-//   if (MyFile_Res == FR_OK) {
-//     printf("文件打开/创建成功，准备写入数据...\r\n");
-//     sprintf(MyFile_WriteBuffer, "hello world\r\n");
-
-//     MyFile_Res =
-//         f_write(&MyFile, MyFile_WriteBuffer, sizeof(MyFile_WriteBuffer),
-//                 &MyFile_Num);  // 向文件写入数据
-//     if (MyFile_Res == FR_OK) {
-//       printf("写入成功，写入内容为：\r\n");
-//       printf("%s\r\n", MyFile_WriteBuffer);
-//     } else {
-//       printf("文件写入失败，请检查SD卡或重新格式化!\r\n");
-//       f_close(&MyFile);  // 关闭文件
-//       return ERROR;
-//     }
-//     f_close(&MyFile);  // 关闭文件
-//     return SUCCESS;
-//   } else {
-//     printf("无法打开/创建文件，请检查SD卡或重新格式化!\r\n");
-//     f_close(&MyFile);  // 关闭文件
-//     return ERROR;
-//   }
-
-//   printf("-------------FatFs 文件读取测试---------------\r\n");
-
-//   BufferSize = sizeof(MyFile_WriteBuffer) / sizeof(BYTE);  //
-//   计算写入的数据长度 MyFile_Res =
-//       f_open(&MyFile, "0:FatFs Test.txt",
-//              FA_OPEN_EXISTING | FA_READ);  //
-//              打开文件，若不存在则创建该文件
-//   MyFile_Res =
-//       f_read(&MyFile, MyFile_ReadBuffer, BufferSize, &MyFile_Num);  //
-//       读取文件
-//   if (MyFile_Res == FR_OK) {
-//     printf("文件读取成功，正在校验数据...\r\n");
-
-//     for (i = 0; i < BufferSize; i++) {
-//       if (MyFile_WriteBuffer[i] != MyFile_ReadBuffer[i])  // 校验数据
-//       {
-//         printf("校验失败，请检查SD卡或重新格式化!\r\n");
-//         f_close(&MyFile);  // 关闭文件
-//         return ERROR;
-//       }
-//     }
-//     printf("校验成功，读出的数据为：\r\n");
-//     printf("%s\r\n", MyFile_ReadBuffer);
-//   } else {
-//     printf("无法读取文件，请检查SD卡或重新格式化!\r\n");
-//     f_close(&MyFile);  // 关闭文件
-//     return ERROR;
-//   }
-
-//   f_close(&MyFile);  // 关闭文件
-//   return SUCCESS;
-// }
-// int16_t sum = 1000;
-// int16_t sd_wirte_IMU(void) {
-//   FIL MyFile;       // 文件对象
-//   UINT MyFile_Num;  //
-
-//   BYTE readBuffer[64];
-
-//   BYTE MyFile_WriteBuffer[512] = {0};  // 要写入的数据
-//   uint8_t MyFile_Res;
-//   IMUOrigData_t IMU_DatatoSD;
-
-//   BYTE *FileWriteBufferPoint;
-
-//   uint16_t frame = 0;
-
-//   printf("-------------FatFs 文件创建和写入测试---------------\r\n");
-//   MyFile_Res =
-//       f_open(&MyFile, "IMU_data.txt",
-//              FA_CREATE_ALWAYS | FA_WRITE);  //
-//              打开文件，若不存在则创建该文件
-
-//   if (MyFile_Res == FR_OK) {
-//     printf("文件打开/创建成功，准备写入数据...\r\n");
-
-//     FileWriteBufferPoint = &MyFile_WriteBuffer[0];
-
-//     while (sum) {
-//       sum--;
-//       xQueueReceive(xIMUDataQueue, &IMU_DatatoSD, portMAX_DELAY);
-
-//       frame++;
-
-//       if (frame >= 8) {
-//         frame = 0;
-//         MyFile_Res =
-//             f_write(&MyFile, MyFile_WriteBuffer,
-//             sizeof(MyFile_WriteBuffer),
-//                     &MyFile_Num);  // 向文件写入数据
-//       }
-
-//       if (MyFile_Res == FR_OK) {
-//         printf("写入成功，写入内容为：\r\n");
-//         printf("%s\r\n", MyFile_WriteBuffer);
-//       } else {
-//         printf("文件写入失败，请检查SD卡或重新格式化!\r\n");
-//         f_close(&MyFile);  // 关闭文件
-//         return ERROR;
-//       }
-//     }
-
-//     f_close(&MyFile);  // 关闭文件
-
-//     HAL_GPIO_WritePin(GPIOE, GPIO_PIN_4, GPIO_PIN_RESET);
-
-//     printf("end\r\n");
-//   }
-
-//   else {
-//     printf("无法打开/创建文件，请检查SD卡或重新格式化!\r\n");
-//     f_close(&MyFile);  // 关闭文件
-//     return ERROR;
-//   }
-//   return SUCCESS;
-// }

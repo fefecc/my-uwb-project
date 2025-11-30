@@ -19,9 +19,16 @@
             "type_traits": "c",
             "freertos.h": "c",
             "usart.h": "c",
-            "gnss_dma_buffer.h": "c"
+            "gnss_dma_buffer.h": "c",
+            "um960samplingtask.h": "c",
+            "inttypes.h": "c",
+            "array": "c",
+            "string": "c",
+            "string_view": "c",
+            "span": "c",
+            "timestamptask.h": "c"
         },
-        "cortex-debug.variableUseNaturalFormat": false
+        "cortex-debug.variableUseNaturalFormat": true
     },
     "extensions": {}
 }
