@@ -39,7 +39,7 @@ typedef struct {
 } utc_timestamp_t;
 
 // 全局时间戳结构体，直接记录时间戳
-typedef struct {
+typedef struct __attribute__((packed)) {
     uint32_t week;   // 周数
     uint32_t tow_ms; // 周内毫秒
     uint32_t us;     // 1ms -> 20*50us

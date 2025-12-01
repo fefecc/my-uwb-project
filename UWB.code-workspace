@@ -28,7 +28,7 @@
             "span": "c",
             "timestamptask.h": "c"
         },
-        "cortex-debug.variableUseNaturalFormat": true
+        "cortex-debug.variableUseNaturalFormat": false
     },
     "extensions": {}
 }

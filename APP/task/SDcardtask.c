@@ -1,4 +1,4 @@
-#include "SDcardtask.h"
+﻿#include "SDcardtask.h"
 
 #include "DoubleRingBuffer.h"
 #include "FreeRTOS.h"
@@ -21,8 +21,25 @@
 #define SDLEDGPIOx   LED0_GPIO_Port
 #define SDLEDPINx    LED0_Pin
 
+// SD写入双缓冲配置
+#define SD_WRITE_CHUNK_SIZE (16 * 1024)
+#define SD_WRITE_BUF_COUNT  2
+#define SD_LOG_FILE         "uwb_log.bin"
+
+/* 双缓冲区结构体 */
+typedef struct
+{
+    uint8_t buf[SD_WRITE_BUF_COUNT][SD_WRITE_CHUNK_SIZE]; // 两个物理缓冲区
+    uint32_t write_pos;                                   // 当前写入位置
+    uint8_t active;                                       // 当前在写的缓冲区索引：0 或 1
+    volatile uint8_t ready[2];                            // 哪个缓冲区数据已经准备好：0/1
+} double_buffer_t;
+
+static double_buffer_t dbuf   = {0};
+static const size_t frame_len = sizeof(sd_fusion_record_t);
+
 // 排序用FIFO（按时间戳升序）
-#define SD_FUSION_FIFO_CAP 1024
+#define SD_FUSION_FIFO_CAP 256
 typedef struct {
     sd_fusion_record_t *buf;
     uint16_t capacity;
@@ -57,6 +74,62 @@ static void fifo_insert(const sd_fusion_record_t *rec)
     s_fifo.buf[s_fifo.head] = *rec;
     s_fifo.head             = (s_fifo.head + 1) % s_fifo.capacity;
     s_fifo.count++;
+}
+
+static int fifo_pop(sd_fusion_record_t *rec) // 取数据
+{
+    if (s_fifo.count == 0) {
+        return 0;
+    }
+    if (rec) {
+        *rec = s_fifo.buf[s_fifo.tail];
+    }
+    s_fifo.tail = (s_fifo.tail + 1) % s_fifo.capacity;
+    s_fifo.count--;
+    return 1;
+}
+
+static void buffer_append_frame(const uint8_t *frame)
+{
+    const uint8_t *src = frame;
+    size_t remaining   = frame_len;
+
+    while (remaining > 0) {
+        if (dbuf.write_pos >= SD_WRITE_CHUNK_SIZE) {
+            dbuf.ready[dbuf.active] = 1;
+            dbuf.active ^= 1;
+            dbuf.write_pos = 0;
+        }
+
+        size_t space   = SD_WRITE_CHUNK_SIZE - dbuf.write_pos;
+        size_t to_copy = (remaining < space) ? remaining : space;
+
+        memcpy(&dbuf.buf[dbuf.active][dbuf.write_pos], src, to_copy);
+        dbuf.write_pos += (uint32_t)to_copy;
+        src += to_copy;
+        remaining -= to_copy;
+
+        if (dbuf.write_pos >= SD_WRITE_CHUNK_SIZE) {
+            dbuf.ready[dbuf.active] = 1;
+            dbuf.active ^= 1;
+            dbuf.write_pos = 0;
+        }
+    }
+}
+
+static void flush_ready_buffers(FIL *sd_file)
+{
+    for (uint8_t i = 0; i < SD_WRITE_BUF_COUNT; i++) {
+        if (dbuf.ready[i]) {
+            dbuf.ready[i] = 0;
+            UINT bw       = 0;
+            FRESULT fr    = f_write(sd_file, dbuf.buf[i], SD_WRITE_CHUNK_SIZE, &bw);
+            if (fr == FR_OK && bw == SD_WRITE_CHUNK_SIZE) {
+                HAL_GPIO_TogglePin(SDLEDGPIOx, SDLEDPINx); // 每写入一帧闪烁LED
+                f_sync(sd_file);                           // 立即刷新，防热插拔丢数据
+            }
+        }
+    }
 }
 
 //	函数：FatFs_Check
@@ -111,81 +184,6 @@ void FatFs_GetVolume(void) // 计算设备容量
     printf("SD剩余：%ldMB\r\n", SD_FreeCapacity);
 }
 
-int16_t SDCardTaskFunc(void)
-{
-    static MsgIMU_t MsgSD = {0}; // 数据包结构
-    // 文件管理
-    FIL MyFile;         // 文件对象
-    uint8_t MyFile_Res; // 检查文件函数的检查值
-    UINT MyFile_Num;    // 写入数据的长度
-
-    // 缓冲区
-    static RingBuffer rb;
-    static uint8_t ToSDdataPool[SDPoolLength]; // 构造内存池，用于挂载ringbuffer
-    uint8_t *FileWriteBufferPoint;
-
-    static uint8_t FullBufferIndex = 0; // 0表示都不满，1-2分别表示两段满
-    static uint8_t WriteToSdData[SDLength];
-    static uint16_t bufferDataLength;
-
-    // 初始化内存池
-    if (RB_Init(&rb, ToSDdataPool, SDLength) != 0) {
-        printf("RingBuffer 初始化失败！\n");
-        return -1;
-    }
-
-    MyFile_Res = f_open(
-        &MyFile, "test11.29.txt",
-        FA_CREATE_ALWAYS | FA_WRITE); // 打开文件，若不存在,则在sd卡中，创建文件
-
-    if (MyFile_Res == FR_OK) {
-        printf("文件打开/创建成功，准备写入数据...\r\n");
-
-        while (1) {
-            // xQueueReceive(IMUDataToSDTaskQueue, &MsgSD, portMAX_DELAY);
-            FileWriteBufferPoint = (uint8_t *)&MsgSD;
-            RB_Write(&rb, FileWriteBufferPoint, sizeof(MsgIMU_t));
-
-            if (RB_IsBufferFull(&rb, 0)) {
-                FullBufferIndex = 1; // 1表示前端不满
-            }
-
-            else if (RB_IsBufferFull(&rb, 1)) {
-                FullBufferIndex = 2; // 2表示后端不满
-            }
-
-            else {
-            }
-
-            if (FullBufferIndex) {
-                bufferDataLength = RB_Read(&rb, WriteToSdData, SDLength);
-                if (bufferDataLength > 0) {
-                    MyFile_Res =
-                        f_write(&MyFile, WriteToSdData, bufferDataLength, &MyFile_Num);
-
-                    f_sync(&MyFile);
-                    HAL_GPIO_TogglePin(SDLEDGPIOx, SDLEDPINx);
-                } else {
-                }
-
-                RB_ClearBufferFlag(&rb, FullBufferIndex - 1); // 清除标志
-                FullBufferIndex = 0;
-                if (MyFile_Res == FR_OK) {
-                } else {
-                }
-            }
-        }
-
-        f_close(&MyFile); // 关闭文件
-    }
-
-    else {
-        printf("文件打开/创建失败...\r\n");
-        return -1;
-    }
-    return 0;
-}
-
 void PackResult(void)
 {
     // 读取GNSS队列（非阻塞）
@@ -193,6 +191,9 @@ void PackResult(void)
     while (xUM960SamplingQueue &&
            xQueueReceive(xUM960SamplingQueue, &gnss_rec, 0) == pdTRUE) {
         sd_fusion_record_t rec = {0};
+        rec.sync1              = 0xAA;
+        rec.sync2              = 0x44;
+        rec.sync3              = 0xB5;
         rec.timestamp          = gnss_rec.ts;
         rec.gnss               = gnss_rec.data;
         memset(&rec.imu, 0, sizeof(rec.imu));
@@ -204,6 +205,9 @@ void PackResult(void)
     while (xIMUDataQueue &&
            xQueueReceive(xIMUDataQueue, &imu_rec, 0) == pdTRUE) {
         sd_fusion_record_t rec = {0};
+        rec.sync1              = 0xAA;
+        rec.sync2              = 0x44;
+        rec.sync3              = 0xB5;
         rec.timestamp          = imu_rec.ts;
         memset(&rec.gnss, 0, sizeof(rec.gnss));
         rec.imu = imu_rec.data;
@@ -215,41 +219,30 @@ void SDMMCTask(void *argument)
 {
     /* USER CODE BEGIN SDMMCTask */
     /* Infinite loop */
-    // 直接检测sd卡是否插上，如果没有不初始化，进入死循环,如果检测到插上则直接开始初始化，执行写入的代码
+    // 直接检测sd卡是否存在，如果没检测到就不上电，不执行后续的代码，如果检测到就直接开始初始化并执行写入的代码
     if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5) == GPIO_PIN_RESET) {
-        // 初始化SD卡，和数据流
         MX_SDMMC1_SD_Init();
         MX_FATFS_Init();
         osDelay(5);
         FatFs_Check();
 
-        // 简单写入测试：创建文件 test11.29.txt 并写入 "helloworld"
         FIL file;
-        UINT written    = 0;
-        const char *msg = "helloworld";
-        FRESULT fr      = f_open(&file, "test11.29.txt", FA_CREATE_ALWAYS | FA_WRITE);
+        FRESULT fr = f_open(&file, SD_LOG_FILE, FA_CREATE_ALWAYS | FA_WRITE);
         if (fr == FR_OK) {
+            sd_fusion_record_t rec;
             while (1) {
-                PackResult();
+                PackResult(); // 填充 s_fifo_storage
+
+                while (fifo_pop(&rec)) {
+                    buffer_append_frame((const uint8_t *)&rec);
+                }
+                flush_ready_buffers(&file);
                 osDelay(1);
             }
 
-            if (s_fifo.count > 0) {
-                UINT fusion_bytes   = s_fifo.count * sizeof(sd_fusion_record_t);
-                UINT fusion_written = 0;
-                fr                  = f_write(&file, s_fifo.buf, fusion_bytes, &fusion_written);
-                s_fifo.count        = 0;
-                if (fr != FR_OK || fusion_written != fusion_bytes) {
-                    printf("SD 写入融合数据失败, fr=%d, wrote=%u\r\n", fr,
-                           (unsigned int)fusion_written);
-                }
-            }
-            f_write(&file, msg, strlen(msg), &written);
-            f_sync(&file);
             f_close(&file);
-            printf("SD 写入测试完成: %u bytes\r\n", (unsigned int)written);
         } else {
-            printf("SD 写入测试失败, f_open err=%d\r\n", fr);
+            printf("SD 写入打开失败, f_open err=%d\r\n", fr);
         }
     }
 

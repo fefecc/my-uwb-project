@@ -7,10 +7,13 @@
 #include "timestamp.h"
 
 // SD写入融合数据封装（可扩展 UWB 等）
-typedef struct {
+typedef struct __attribute__((packed)) {
+    uint8_t sync1;                    // 帧头1：0xAA
+    uint8_t sync2;                    // 帧头2：0x44
+    uint8_t sync3;                    // 帧头3：0xB5
     utc_global_timestamp_t timestamp; // 全局时间戳
-    gnss_fusion_msg_t gnss; // GNSS融合数据
-    IMUOrigData_t imu;      // IMU原始数据
+    gnss_fusion_msg_t gnss;           // GNSS融合数据
+    IMUOrigData_t imu;                // IMU原始数据
     // 预留: 后续可添加 UWB 等其他传感器数据
 } sd_fusion_record_t;
 
