@@ -8,6 +8,7 @@
 
 #include "bphero_uwb.h"
 #include "uwb_timestamp.h"
+#include "timestamp.h"
 
 // 定义邮箱结构体
 // 这个结构用来记录时间戳
@@ -88,9 +89,32 @@ typedef struct {
     uint16_t short_addr;
 } dw1000_local_device_t;
 
+typedef struct {
+
+    utc_global_timestamp_t utc_timestamp; // RESULT 中的 UTC 时间戳
+
+    uint16_t anchorId; // 基站 ID (2字节)
+    uint16_t tagId;    // 标签 ID (2字节)
+
+    double distance_m; // RESULT 中计算得到的距离，单位：米
+
+    double fpp_dbm; // 首径功率 (8字节)
+    double rxp_dbm; // 接收总功率 (8字节)
+    double diff_db; // 功率差 (用于判断 NLOS) (8字节)
+
+    uint8_t accum_data[25]; // 累加器数据片段
+
+} uwb_result_queue_item_t;
+
+typedef struct {
+    double fpp_dbm; // 首径功率 (First Path Power)
+    double rxp_dbm; // 接收总功率 (RX Power)
+    double diff_db; // 功率差 (用于判断 NLOS)
+} SignalStats_t;
+
 extern TaskHandle_t dw1000samplingTaskNotifyHandle;
 
-extern QueueHandle_t dw1000data_queue;
+extern QueueHandle_t xDW1000DataQueue;
 
 void DW1000samplingtask(void *argument);
 int16_t clear_node_profile(uwb_node_profile_t *node_profile);

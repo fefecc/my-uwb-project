@@ -146,11 +146,11 @@ void MX_FREERTOS_Init(void)
 
     /* USER CODE BEGIN RTOS_QUEUES */
     /* add queues, ... */
-    xIMUDataQueue = xQueueCreate(128, sizeof(imu_record_t));
+    xIMUDataQueue = xQueueCreate(256, sizeof(imu_record_t));
 
-    xUM960SamplingQueue = xQueueCreate(16, sizeof(gnss_fusion_record_t));
+    xUM960SamplingQueue = xQueueCreate(32, sizeof(gnss_fusion_record_t));
 
-    dw1000data_queue = xQueueCreate(64, sizeof(double)); // 发送距离数据
+    xDW1000DataQueue = xQueueCreate(32, sizeof(uwb_result_queue_item_t)); // 发送距离数据
 
     /* USER CODE END RTOS_QUEUES */
 

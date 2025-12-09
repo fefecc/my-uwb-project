@@ -82,6 +82,10 @@ static uwb_anchor_record_t g_temp_anchor_record = {0};
 #define UWB_DELAY_MS_Tag    4U // 延时发送的时间
 #define UWB_DELAY_MS_Anchor 3U
 
+static dwt_rxdiag_t rx_diag = {0};           // cir参数
+#define ACCUM_DATA_LEN (2 * 2 * (3 + 3) + 1) // 25字节
+static uint8 accum_data[ACCUM_DATA_LEN];
+
 typedef struct {
     bool active;
     uint16_t tag_addr;
@@ -147,6 +151,8 @@ dw1000_local_device_t local_device = {0};
 static uint8_t dw1000tx_buffer[FRAME_LEN_MAX];
 static uint8_t dw1000rx_buffer[FRAME_LEN_MAX];
 
+static utc_global_timestamp_t g_Currentts;
+
 extern srd_msg_dsss msg_f_send;
 
 static Tag_State_t g_current_tag_state       = TAG_STATE_IDLE;
@@ -156,10 +162,53 @@ static uint32_t notified_value = 0;
 
 static uint16_t NodeIndex = 0;
 
-QueueHandle_t dw1000data_queue = NULL;
+QueueHandle_t xDW1000DataQueue = NULL;
 
 static float g_anchor_pos_x = 0.0f;
 static float g_anchor_pos_y = 0.0f;
+
+// 假设您已包含 deca_device_api.h 和 deca_regs.h
+
+// 常数定义：根据您的 PRF 设置修改 (参考手册 4.7 节)
+// 16MHz PRF -> A = 113.77
+// 64MHz PRF -> A = 121.74
+#define DWT_PRF_64M_RFD 121.74
+#define CONST_A         DWT_PRF_64M_RFD // 当前使用 64MHz
+
+void calculate_signal_quality(dwt_rxdiag_t *diag, SignalStats_t *result)
+{
+    // 1. 提取参数 (转为浮点数)
+    double N = (double)diag->rxPreamCount;
+    // 前导码累积计数 (RXPACC) [cite: 584]
+    double C = (double)diag->maxGrowthCIR;
+    // 信道冲击响应功率 (CIR_PWR) [cite: 582]
+
+    // 首径幅度 F1, F2, F3 [cite: 575-579]
+    double F1 = (double)diag->firstPathAmp1;
+    double F2 = (double)diag->firstPathAmp2;
+    double F3 = (double)diag->firstPathAmp3;
+
+    // 2. 计算首径功率 (First Path Power)
+    // 公式: FPP = 10 * log10((F1^2 + F2^2 + F3^2) / N^2) - A [cite: 575]
+    double fpp_val = (F1 * F1 + F2 * F2 + F3 * F3) / (N * N);
+    if (fpp_val > 0.0) {
+        result->fpp_dbm = 10.0 * log10(fpp_val) - CONST_A;
+    } else {
+        result->fpp_dbm = -200.0; // 无效值
+    }
+
+    // 3. 计算接收总功率 (RX Power)
+    // 公式: RXP = 10 * log10((C * 2^17) / N^2) - A [cite: 581]
+    double rxp_val = (C * 131072.0) / (N * N); // 2^17 = 131072
+    if (rxp_val > 0.0) {
+        result->rxp_dbm = 10.0 * log10(rxp_val) - CONST_A;
+    } else {
+        result->rxp_dbm = -200.0; // 无效值
+    }
+
+    // 4. 计算差值 (Diff)
+    result->diff_db = result->rxp_dbm - result->fpp_dbm;
+}
 
 void dw1000TagMain(void)
 {
@@ -193,6 +242,8 @@ void dw1000TagMain(void)
                 dwt_writetxdata(frame_size, dw1000tx_buffer, 0);
                 dwt_writetxfctrl(frame_size, 0);
                 dwt_starttx(DWT_START_TX_IMMEDIATE);
+
+                g_Currentts = gettimestamp();
 
                 g_current_tag_state = TAG_STATE_AWAIT_POLL_TX_CONFIRM;
                 break;
@@ -283,7 +334,19 @@ void dw1000TagMain(void)
                 if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(200)) == pdTRUE) {
                     if (notified_value & UWB_EVENT_RX_DONE) {
                         uint16_t rx_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFLEN_MASK;
+
                         dwt_readrxdata(dw1000rx_buffer, rx_len, 0);
+
+                        dwt_readdiagnostics(&rx_diag);
+
+                        uint16 fp_int = rx_diag.firstPath / 64;
+
+                        dwt_readaccdata(accum_data, ACCUM_DATA_LEN, (fp_int - 2) * 4);
+
+                        SignalStats_t stats;
+
+                        calculate_signal_quality(&rx_diag, &stats); // 一个初步计算
+
                         uwb_frame_t rx_frame;
                         if (uwb_frame_decode(&rx_frame, dw1000rx_buffer, rx_len) == 0 &&
                             rx_frame.type == UWB_FRAME_TYPE_RESULT) {
@@ -311,10 +374,29 @@ void dw1000TagMain(void)
                                                                                 anchor_final_rx);
 
                             g_temp_anchor_record.distance_m = dist;
+
                             UWB_CommitTempAnchorRecord();
 
-                            log_info("RESULT seq=%d dist=%.3f m ", rx_frame.header.sequence_num, dist);
-                            log_info("RESULT seq=%d dist=%.3f m ", rx_frame.header.sequence_num, dist);
+                            // 赋值dw1000的数据包，发送给函数
+                            uwb_result_queue_item_t dw1000data;
+
+                            dw1000data.utc_timestamp = g_Currentts;
+
+                            dw1000data.anchorId   = g_temp_anchor_record.short_addr;
+                            dw1000data.tagId      = local_device.short_addr;
+                            dw1000data.distance_m = dist;
+                            dw1000data.fpp_dbm    = stats.fpp_dbm;
+                            dw1000data.rxp_dbm    = stats.rxp_dbm;
+                            dw1000data.diff_db    = stats.diff_db;
+                            memcpy(dw1000data.accum_data, accum_data, ACCUM_DATA_LEN);
+
+                            BaseType_t Xsendresult = xQueueSend(xDW1000DataQueue, &dw1000data, 0);
+                            if (Xsendresult != pdPASS) {
+                                printf("dw1000 sampling queue full\r\n");
+                            }
+
+                            // log_info("RESULT seq=%d dist=%.3f m ",
+                            // rx_frame.header.sequence_num, dist);
 
                             g_current_tag_state = TAG_STATE_IDLE;
                         } else {
