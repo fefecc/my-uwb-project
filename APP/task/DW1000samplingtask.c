@@ -52,7 +52,7 @@ typedef enum {
 void reset_anchor_state_machine(Anchor_State_t *current_anchor_state);
 void reset_tag_state_machine(Tag_State_t *current_tag_state);
 
-#define UWB_ANCHOR_TABLE_SIZE 3
+#define UWB_ANCHOR_TABLE_SIZE 4
 
 typedef struct {
     uint16_t short_addr;
@@ -74,11 +74,13 @@ static uwb_anchor_record_t g_anchor_table[UWB_ANCHOR_TABLE_SIZE] = {
     {.short_addr = 0x0032},
     {.short_addr = 0x0033},
     {.short_addr = 0x0034},
+    {.short_addr = 0x0035},
 };
 
 static uwb_anchor_record_t g_temp_anchor_record = {0};
 
-#define UWB_DELAY_MS 10U
+#define UWB_DELAY_MS_Tag    4U // 延时发送的时间
+#define UWB_DELAY_MS_Anchor 3U
 
 typedef struct {
     bool active;
@@ -138,11 +140,6 @@ static void Anchor_ResetSession(void)
     memset(&g_anchor_session, 0, sizeof(g_anchor_session));
 }
 
-uint16_t UWB_GetTagFinalDelayMs(void)
-{
-    return UWB_DELAY_MS;
-}
-
 double twr_distance;
 
 dw1000_local_device_t local_device = {0};
@@ -169,8 +166,8 @@ void dw1000TagMain(void)
     while (1) {
         switch (g_current_tag_state) {
             case TAG_STATE_IDLE: {
+
                 //  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-                osDelay(30);
 
                 HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
 
@@ -232,7 +229,7 @@ void dw1000TagMain(void)
                             uwb_frame_t final_frame;
                             uwb_frame_init(&final_frame, UWB_FRAME_TYPE_FINAL, &self_addr, &dest_addr, local_device.seqNum);
 
-                            uwb_timestamp_t final_tx_planned = uwb_timestamp_add_delay_ms(&g_temp_anchor_record.resp_rx, UWB_DELAY_MS);
+                            uwb_timestamp_t final_tx_planned = uwb_timestamp_add_delay_ms(&g_temp_anchor_record.resp_rx, UWB_DELAY_MS_Tag);
                             g_temp_anchor_record.final_tx    = final_tx_planned;
 
                             final_frame.payload.final.poll_tx  = g_temp_anchor_record.poll_tx;
@@ -317,6 +314,7 @@ void dw1000TagMain(void)
                             UWB_CommitTempAnchorRecord();
 
                             log_info("RESULT seq=%d dist=%.3f m ", rx_frame.header.sequence_num, dist);
+                            log_info("RESULT seq=%d dist=%.3f m ", rx_frame.header.sequence_num, dist);
 
                             g_current_tag_state = TAG_STATE_IDLE;
                         } else {
@@ -371,7 +369,7 @@ void dw1000AnchorMain(void)
                             local_device.seqNum         = g_anchor_session.sequence_num;
 
                             uwb_timestamp_t resp_tx = uwb_timestamp_add_delay_ms(
-                                &g_anchor_session.poll_rx_ts, UWB_DELAY_MS);
+                                &g_anchor_session.poll_rx_ts, UWB_DELAY_MS_Anchor);
                             g_anchor_session.resp_tx_ts = resp_tx;
                             uint64_t resp_ticks         = uwb_timestamp_to_u64(&resp_tx);
                             dwt_setdelayedtrxtime((uint32_t)(resp_ticks >> 8));
@@ -486,7 +484,7 @@ void dw1000AnchorMain(void)
             case ANCHOR_STATE_AWAIT_RESULT_TX_CONFIRM: {
                 if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value, pdMS_TO_TICKS(200)) == pdTRUE &&
                     (notified_value & UWB_EVENT_TX_DONE)) {
-                    log_info("result sent succeed\r\n");
+                    // log_info("result sent succeed\r\n");
                     reset_anchor_state_machine(&g_current_anchor_state);
                 } else {
                     log_error("RESULT sent failed seq=%u", g_anchor_session.sequence_num);
@@ -501,7 +499,6 @@ void dw1000AnchorMain(void)
                 break;
             }
         }
-        osDelay(1);
     }
 }
 

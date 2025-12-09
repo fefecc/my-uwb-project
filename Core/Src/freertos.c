@@ -83,7 +83,7 @@ osThreadId_t dw1000samplingtaskHandle;
 const osThreadAttr_t dw1000sampling_attributes = {
     .name       = "dw1000sampling",
     .stack_size = 1024 * 4,
-    .priority   = (osPriority_t)osPriorityHigh7,
+    .priority   = (osPriority_t)osPriorityRealtime,
 };
 
 /* Definitions for IMU */
@@ -166,10 +166,11 @@ void MX_FREERTOS_Init(void)
 
         log_info("Sensor tasks enabled for TAG role");
 
-        InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
-        IMUHandle                = osThreadNew(IMUTask, NULL, &IMU_attributes);
-        SDMMCHandle              = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
-        GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
+        // InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
+        // IMUHandle                = osThreadNew(IMUTask, NULL, &IMU_attributes);
+        // SDMMCHandle              = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
+        // GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
+        // dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
         dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
 
     }
@@ -177,12 +178,12 @@ void MX_FREERTOS_Init(void)
     else if (cfg->device_role == APP_DEVICE_ROLE_ANCHOR) {
 
         log_info("Sensor tasks enabled for ANCHOR role");
-
-        InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
-        dw1000samplingtaskHandle = NULL; // osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
-        IMUHandle                = osThreadNew(IMUTask, NULL, &IMU_attributes);
-        SDMMCHandle              = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
-        GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
+        dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
+        // InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
+        // dw1000samplingtaskHandle = NULL; // osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
+        // IMUHandle                = osThreadNew(IMUTask, NULL, &IMU_attributes);
+        // SDMMCHandle              = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
+        // GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
 
     } else {
 
