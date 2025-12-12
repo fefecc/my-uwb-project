@@ -397,6 +397,7 @@ void dw1000TagMain(void)
                             memcpy(dw1000data.accum_data, accum_data, ACCUM_DATA_LEN);
 
                             BaseType_t Xsendresult = xQueueSend(xDW1000DataQueue, &dw1000data, 0);
+
                             if (Xsendresult != pdPASS) {
                                 printf("dw1000 sampling queue full\r\n");
                             }

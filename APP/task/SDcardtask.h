@@ -1,10 +1,17 @@
 #ifndef _SDCARD_H_
 #define _SDCARD_H_
 
+#include <stdbool.h>
+
 #include "main.h"
 #include "UM960samplingtask.h"
 #include "imusamplingtask.h"
 #include "timestamp.h"
+
+// 日志来源标识
+#define LOG_SRC_IMU     1
+#define LOG_SRC_GNSS    2
+#define LOG_SRC_DW1000  3
 
 // SD写入融合数据封装（可扩展 UWB 等）
 typedef struct __attribute__((packed)) {
@@ -33,6 +40,12 @@ typedef struct {
     volatile uint32_t head; // 写入指针（生产者用）
     volatile uint32_t tail; // 读取指针（消费者用）
 } LogQueue;
+
+// 向日志队列写入一条记录（按 timestamp.tow_ms 排序），成功返回 true，队列满返回 false
+bool LogQueue_Push(LogQueue *q, const void *frame, uint8_t source_id);
+
+// 读取并弹出一条记录，返回指向内部缓冲区的指针，空时返回 NULL
+LogItem *LogQueue_Read(LogQueue *q);
 
 void FatFs_Check(void);     // 判断FatFs是否挂载成功，若没有创建FatFs则格式化SD卡
 void FatFs_GetVolume(void); // 计算设备的容量，包括总容量和剩余容量

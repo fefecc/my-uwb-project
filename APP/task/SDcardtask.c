@@ -2,6 +2,7 @@
 
 #include "DoubleRingBuffer.h"
 #include "FreeRTOS.h"
+#include "DW1000samplingtask.h"
 #include "fatfs.h"
 #include "ff.h"
 #include "ffconf.h"
@@ -215,6 +216,112 @@ void PackResult(void)
     }
 }
 
+LogQueue g_log_queue = {0}; // zero-initialized: empty queue
+
+bool LogQueue_Push(LogQueue *q, const void *frame, uint8_t source_id)
+{
+    if (!q || !frame) {
+        return false;
+    }
+
+    uint32_t next_head = (q->head + 1U) % QUEUE_SIZE;
+    if (next_head == q->tail) {
+        // queue full
+        return false;
+    }
+
+    // 预填充待入队元素，按 source_id 解析长度与时间戳
+    LogItem new_item   = {0};
+    new_item.source_id = source_id;
+
+    uint16_t copy_len = 0;
+    switch (source_id) {
+        case LOG_SRC_IMU: {
+            const imu_record_t *src = (const imu_record_t *)frame;
+            copy_len                = sizeof(imu_record_t);
+            new_item.timestamp      = src->ts;
+            break;
+        }
+        case LOG_SRC_GNSS: {
+            const gnss_fusion_record_t *src = (const gnss_fusion_record_t *)frame;
+            copy_len                        = sizeof(gnss_fusion_record_t);
+            new_item.timestamp              = src->ts;
+            break;
+        }
+        case LOG_SRC_DW1000: {
+            const uwb_result_queue_item_t *src =
+                (const uwb_result_queue_item_t *)frame;
+            copy_len           = sizeof(uwb_result_queue_item_t);
+            new_item.timestamp = src->utc_timestamp;
+            break;
+        }
+        default:
+            return false; // unknown source
+    }
+
+    if (copy_len > LOG_DATA_MAX_LEN) {
+        copy_len = LOG_DATA_MAX_LEN;
+    }
+    new_item.data_len = copy_len;
+    memcpy(new_item.data, frame, copy_len);
+
+    // 插入排序：保持队列按 timestamp.tow_ms 升序
+    uint32_t pos = q->head; // 从写入位置开始
+
+    // 从尾端向前寻找合适位置，遇到 <= new_item 则停止
+    while (pos != q->tail) {
+        uint32_t prev = (pos + QUEUE_SIZE - 1U) % QUEUE_SIZE;
+        if (q->buffer[prev].timestamp.tow_ms <= new_item.timestamp.tow_ms) {
+            break;
+        }
+        // 向后搬移元素，为新元素腾位
+        q->buffer[pos] = q->buffer[prev];
+        pos            = prev;
+    }
+
+    q->buffer[pos] = new_item;
+    q->head        = next_head;
+    return true;
+}
+
+LogItem *LogQueue_Read(LogQueue *q)
+{
+    if (!q) {
+        return NULL;
+    }
+    if (q->head == q->tail) {
+        return NULL; // empty
+    }
+
+    LogItem *item = &q->buffer[q->tail];
+    q->tail       = (q->tail + 1U) % QUEUE_SIZE;
+    return item;
+}
+
+void PackResult3(void)
+{
+    // 读取 IMU 队列
+    imu_record_t imu_rec;
+    while (xIMUDataQueue &&
+           xQueueReceive(xIMUDataQueue, &imu_rec, 0) == pdTRUE) {
+        LogQueue_Push(&g_log_queue, &imu_rec, LOG_SRC_IMU);
+    }
+
+    // 读取 GNSS 队列
+    gnss_fusion_record_t gnss_rec;
+    while (xUM960SamplingQueue &&
+           xQueueReceive(xUM960SamplingQueue, &gnss_rec, 0) == pdTRUE) {
+        LogQueue_Push(&g_log_queue, &gnss_rec, LOG_SRC_GNSS);
+    }
+
+    // 读取 DW1000 队列
+    uwb_result_queue_item_t uwb_rec;
+    while (xDW1000DataQueue &&
+           xQueueReceive(xDW1000DataQueue, &uwb_rec, 0) == pdTRUE) {
+        LogQueue_Push(&g_log_queue, &uwb_rec, LOG_SRC_DW1000);
+    }
+}
+
 void SDMMCTask(void *argument)
 {
     /* USER CODE BEGIN SDMMCTask */
@@ -231,7 +338,9 @@ void SDMMCTask(void *argument)
         if (fr == FR_OK) {
             sd_fusion_record_t rec;
             while (1) {
-                PackResult(); // 填充 s_fifo_storage
+                // PackResult(); // 填充 s_fifo_storage
+
+                PackResult3();
 
                 while (fifo_pop(&rec)) {
                     buffer_append_frame((const uint8_t *)&rec);
