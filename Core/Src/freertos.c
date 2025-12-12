@@ -166,12 +166,11 @@ void MX_FREERTOS_Init(void)
 
         log_info("Sensor tasks enabled for TAG role");
 
-        // InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
-        // IMUHandle                = osThreadNew(IMUTask, NULL, &IMU_attributes);
-        SDMMCHandle = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
-        // GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
-        // dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
-        // dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
+        InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
+        IMUHandle                = osThreadNew(IMUTask, NULL, &IMU_attributes);
+        SDMMCHandle              = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
+        GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
+        dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
 
     }
 
@@ -179,11 +178,13 @@ void MX_FREERTOS_Init(void)
 
         log_info("Sensor tasks enabled for ANCHOR role");
         dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
-        // InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
-        // dw1000samplingtaskHandle = NULL; // osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
+        InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
         // IMUHandle                = osThreadNew(IMUTask, NULL, &IMU_attributes);
-        // SDMMCHandle              = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
-        // GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
+        //  SDMMCHandle              = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
+        //  GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
+        IMUHandle   = NULL;
+        SDMMCHandle = NULL;
+        GNSSHandle  = NULL;
 
     } else {
 

@@ -25,7 +25,7 @@
 // SD写入双缓冲配置
 #define SD_WRITE_CHUNK_SIZE (16 * 1024)
 #define SD_WRITE_BUF_COUNT  2
-#define SD_LOG_FILE         "uwb_log.bin"
+#define SD_LOG_FILE         "data_log.bin"
 
 /* 双缓冲区结构体 */
 typedef struct
@@ -36,8 +36,14 @@ typedef struct
     volatile uint8_t ready[2];                            // 哪个缓冲区数据已经准备好：0/1
 } double_buffer_t;
 
-static double_buffer_t dbuf   = {0};
-static const size_t frame_len = sizeof(sd_fusion_record_t);
+LogQueue g_log_queue = {0}; // zero-initialized: empty queue
+
+static double_buffer_t dbuf       = {0};
+static double_buffer_t dbuf_ascii = {0};
+
+static void buffer_append_ascii_line(const char *line, size_t len);
+static void flush_ready_buffers_ascii(FIL *sd_file);
+static void drain_log_queue_if_needed(FIL *sd_file);
 
 // 排序用FIFO（按时间戳升序）
 #define SD_FUSION_FIFO_CAP 256
@@ -115,6 +121,128 @@ static void buffer_append_frame(const uint8_t *frame)
             dbuf.active ^= 1;
             dbuf.write_pos = 0;
         }
+    }
+}
+
+static void buffer_append_frame3(FIL *sd_file)
+{
+    // 只有积压达到阈值才开始搬运到 SD 缓冲
+    if (LogQueue_Count(&g_log_queue) < LOG_QUEUE_DRAIN_THRESHOLD) {
+        return;
+    }
+
+    char line[256];
+
+    LogItem *item = NULL;
+    while ((item = LogQueue_Read(&g_log_queue)) != NULL) {
+        double t_ms = (double)item->timestamp.tow_ms +
+                      ((double)item->timestamp.us / 1000.0);
+        int n = 0;
+
+        switch (item->source_id) {
+            case LOG_SRC_IMU:
+                if (item->data_len >= sizeof(imu_record_t)) {
+                    const imu_record_t *imu = (const imu_record_t *)item->data;
+
+                    n = snprintf(line, sizeof(line),
+                                 "IMU  %.3f  %d %d %d %d %d %d\r\n",
+                                 t_ms,
+                                 imu->data.gyro[0], imu->data.gyro[1], imu->data.gyro[2],
+                                 imu->data.accel[0], imu->data.accel[1], imu->data.accel[2]);
+                }
+                break;
+
+            case LOG_SRC_GNSS:
+                if (item->data_len >= sizeof(gnss_fusion_record_t)) {
+                    const gnss_fusion_record_t *gnss =
+                        (const gnss_fusion_record_t *)item->data;
+                    n = snprintf(line, sizeof(line),
+                                 "RTK  %.3f  %.6f %.6f %.3f %.3f %.3f %.3f\r\n",
+                                 t_ms,
+                                 gnss->data.lat, gnss->data.lon, gnss->data.hgt,
+                                 gnss->data.lat_std, gnss->data.lon_std, gnss->data.hgt_std);
+                }
+                break;
+
+            case LOG_SRC_DW1000:
+                if (item->data_len >= sizeof(uwb_result_queue_item_t)) {
+                    const uwb_result_queue_item_t *uwb =
+                        (const uwb_result_queue_item_t *)item->data;
+                    double std_val = uwb->diff_db;
+                    n              = snprintf(line, sizeof(line),
+                                              "UWB  %.3f  %u %.3f %.3f\r\n",
+                                              t_ms,
+                                              (unsigned)uwb->anchorId,
+                                              uwb->distance_m,
+                                              std_val);
+                }
+                break;
+
+            default:
+                break;
+        }
+
+        if (n > 0) {
+            buffer_append_ascii_line(line, (size_t)n);
+            // 若有缓冲区 ready，及时写盘
+            flush_ready_buffers_ascii(sd_file);
+        }
+    }
+
+    // 写出剩余 ready 的缓冲
+    flush_ready_buffers_ascii(sd_file);
+}
+
+static void buffer_append_ascii_line(const char *line, size_t len)
+{
+    const uint8_t *src = (const uint8_t *)line;
+    size_t remaining   = len;
+
+    while (remaining > 0) {
+        if (dbuf_ascii.write_pos >= SD_WRITE_CHUNK_SIZE) {
+            dbuf_ascii.ready[dbuf_ascii.active] = 1;
+            dbuf_ascii.active ^= 1;
+            dbuf_ascii.write_pos = 0;
+        }
+
+        size_t space   = SD_WRITE_CHUNK_SIZE - dbuf_ascii.write_pos;
+        size_t to_copy = (remaining < space) ? remaining : space;
+
+        memcpy(&dbuf_ascii.buf[dbuf_ascii.active][dbuf_ascii.write_pos], src, to_copy);
+        dbuf_ascii.write_pos += (uint32_t)to_copy;
+        src += to_copy;
+        remaining -= to_copy;
+
+        if (dbuf_ascii.write_pos >= SD_WRITE_CHUNK_SIZE) {
+            dbuf_ascii.ready[dbuf_ascii.active] = 1;
+            dbuf_ascii.active ^= 1;
+            dbuf_ascii.write_pos = 0;
+        }
+    }
+}
+
+static void flush_ready_buffers_ascii(FIL *sd_file)
+{
+    for (uint8_t i = 0; i < SD_WRITE_BUF_COUNT; i++) {
+        if (dbuf_ascii.ready[i]) {
+            dbuf_ascii.ready[i] = 0;
+            UINT bw             = 0;
+            // 测试写入固定字符串，便于验证写入路径（需要恢复时改回 buf 写入）
+
+            FRESULT fr = f_write(sd_file, dbuf_ascii.buf[i], SD_WRITE_CHUNK_SIZE, &bw);
+            if (fr == FR_OK) {
+                f_sync(sd_file);
+                HAL_GPIO_TogglePin(SDLEDGPIOx, SDLEDPINx);
+            }
+        }
+    }
+}
+
+static void drain_log_queue_if_needed(FIL *sd_file)
+{
+    uint32_t cnt = LogQueue_Count(&g_log_queue);
+    if (cnt >= 16U) {
+        buffer_append_frame3(sd_file);
     }
 }
 
@@ -216,7 +344,13 @@ void PackResult(void)
     }
 }
 
-LogQueue g_log_queue = {0}; // zero-initialized: empty queue
+uint32_t LogQueue_Count(const LogQueue *q)
+{
+    if (!q) {
+        return 0;
+    }
+    return (q->head + QUEUE_SIZE - q->tail) % QUEUE_SIZE;
+}
 
 bool LogQueue_Push(LogQueue *q, const void *frame, uint8_t source_id)
 {
@@ -338,15 +472,23 @@ void SDMMCTask(void *argument)
         if (fr == FR_OK) {
             sd_fusion_record_t rec;
             while (1) {
-                // PackResult(); // 填充 s_fifo_storage
 
-                PackResult3();
+                PackResult3(); // 填充 g_log_queue（ASCII）
 
-                while (fifo_pop(&rec)) {
-                    buffer_append_frame((const uint8_t *)&rec);
-                }
-                flush_ready_buffers(&file);
-                osDelay(1);
+                // 每累计16帧以上再尝试刷入SD缓冲
+
+                // if (LogQueue_Count(&g_log_queue) >= 16U) {
+                //     osDelay(1);
+                // }
+
+                buffer_append_frame3(&file);
+
+                // while (fifo_pop(&rec)) {
+                //     buffer_append_frame((const uint8_t *)&rec);
+                // }
+                // flush_ready_buffers(&file);
+                // buffer_append_frame3(&file); // 当积压达到阈值时刷 ASCII
+                // osDelay(1);
             }
 
             f_close(&file);
