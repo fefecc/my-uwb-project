@@ -220,14 +220,20 @@ void dw1000TagMain(void)
 
                 HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
 
+                NodeIndex++;
+                NodeIndex = NodeIndex % UWB_ANCHOR_TABLE_SIZE;
+
                 uwb_anchor_record_t *active_record = &g_anchor_table[NodeIndex];
-                g_temp_anchor_record               = *active_record;
+
+                g_temp_anchor_record = *active_record;
+
                 UWB_ResetAnchorTimestamps(&g_temp_anchor_record);
 
                 local_device.seqNum++; // seq ++
 
                 uwb_address_t self_addr = {.pan_id = local_device.pan_id, .short_addr = local_device.short_addr};
                 uwb_address_t dest_addr = {.pan_id = local_device.pan_id, .short_addr = g_temp_anchor_record.short_addr};
+
                 uwb_frame_t poll_frame;
                 uwb_frame_init(&poll_frame, UWB_FRAME_TYPE_POLL, &self_addr, &dest_addr, local_device.seqNum);
 
