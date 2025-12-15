@@ -180,7 +180,6 @@ int readfromspifromisr(uint16 headerLength, const uint8 *headerBuffer,
 
     // 3. 开始SPI事务：将CS引脚拉低
     HAL_GPIO_WritePin(DW1000_CS_GPIO_Port, DW1000_CS_Pin, GPIO_PIN_RESET);
-
     // 4. 只调用一次 HAL_SPI_TransmitReceive() 来完成整个“发送命令+接收数据”的过程
     //    这保证了整个事务是连续且原子的
     if (HAL_SPI_TransmitReceive(DW1000_SPI_HANDLE, tx_buffer, rx_buffer, headerLength + readlength, SPI_TIMEOUT) != HAL_OK) {

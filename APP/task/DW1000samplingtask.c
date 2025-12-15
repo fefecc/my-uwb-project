@@ -438,6 +438,8 @@ void dw1000AnchorMain(void)
         switch (g_current_anchor_state) {
             case ANCHOR_STATE_AWAIT_POLL_RX: {
 
+                HAL_GPIO_TogglePin(LED3_GPIO_Port, LED3_Pin);
+
                 if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value,
                                     pdMS_TO_TICKS(5000)) ==
                     pdTRUE) { // pdMS_TO_TICKS(3000) portMAX_DELAY

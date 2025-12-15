@@ -47,6 +47,15 @@ extern dw1000_local_device_t local_device;
 
 extern void apply_dw1000_optimizations(const dwt_config_t *config);
 
+void pa_init_config(void)
+{
+    uint32_t reg;
+    reg = dwt_read32bitreg(GPIO_CTRL_ID);
+    reg |= 0x00014000;
+    reg |= 0x00050000;
+    dwt_write32bitreg(GPIO_CTRL_ID, reg);
+}
+
 void BPhero_UWB_InitWithProfile(const dwt_config_t *user_cfg, uint16_t pan_id, uint16_t short_addr)
 {
     dwt_config_t active_cfg = (user_cfg != NULL) ? *user_cfg : config;
@@ -59,6 +68,9 @@ void BPhero_UWB_InitWithProfile(const dwt_config_t *user_cfg, uint16_t pan_id, u
             osDelay(1);
         }
     }
+
+    pa_init_config();
+
     spi_set_rate_high();
 
     dwt_configure(&active_cfg);

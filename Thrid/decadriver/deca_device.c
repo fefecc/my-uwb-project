@@ -18,6 +18,9 @@
 #include "deca_types.h"
 // #include "port.h"
 
+#include "FreeRTOS.h"
+#include "cmsis_os.h"
+
 // Defines for enable_clocks function
 #define FORCE_SYS_XTI  0
 #define ENABLE_ALL_SEQ 1
@@ -132,7 +135,13 @@ int dwt_initialise(uint16 config)
     dw1000local.dwt_txcallback = NULL;
     dw1000local.dwt_rxcallback = NULL;
 
-    // Read and validate device ID return -1 if not recognised
+    uint32_t deviceIDdata = 0;
+
+    while (deviceIDdata != DWT_DEVICE_ID) {
+        deviceIDdata = dwt_readdevid();
+        osDelay(1);
+    }
+
     dw1000local.deviceID = dwt_readdevid();
     if (DWT_DEVICE_ID !=
         dw1000local.deviceID) // MP IC ONLY (i.e. DW1000) FOR THIS CODE

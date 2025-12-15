@@ -14,16 +14,16 @@ void reset_DW1000(void)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(DWRSTnGPIOx, &GPIO_InitStruct);
     HAL_GPIO_WritePin(DWRSTnGPIOx, DWRSTnGPIOPINx, GPIO_PIN_RESET);
-    HAL_Delay(1);
+    osDelay(1);
     GPIO_InitStruct.Pin   = DWRSTnGPIOPINx;
     GPIO_InitStruct.Mode  = GPIO_MODE_INPUT;
     GPIO_InitStruct.Pull  = GPIO_NOPULL;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(DWRSTnGPIOx, &GPIO_InitStruct);
     while (HAL_GPIO_ReadPin(DWRSTnGPIOx, DWRSTnGPIOPINx) == GPIO_PIN_RESET) {
-        HAL_Delay(1);
+        osDelay(1);
     }
-    HAL_Delay(2);
+    osDelay(5);
 }
 
 extern SPI_HandleTypeDef hspi2;
