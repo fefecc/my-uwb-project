@@ -157,7 +157,7 @@ static void buffer_append_frame3(FIL *sd_file)
                     const gnss_fusion_record_t *gnss =
                         (const gnss_fusion_record_t *)item->data;
                     n = snprintf(line, sizeof(line),
-                                 "RTK  %.3f  %.6f %.6f %.3f %.3f %.3f %.3f\r\n",
+                                 "RTK  %.3f  %.9f %.9f %.9f %.3f %.3f %.3f\r\n",
                                  t_ms,
                                  gnss->data.lat, gnss->data.lon, gnss->data.hgt,
                                  gnss->data.lat_std, gnss->data.lon_std, gnss->data.hgt_std);
@@ -168,13 +168,21 @@ static void buffer_append_frame3(FIL *sd_file)
                 if (item->data_len >= sizeof(uwb_result_queue_item_t)) {
                     const uwb_result_queue_item_t *uwb =
                         (const uwb_result_queue_item_t *)item->data;
-                    double std_val = uwb->diff_db;
-                    n              = snprintf(line, sizeof(line),
-                                              "UWB  %.3f  %u %.3f %.3f\r\n",
-                                              t_ms,
-                                              (unsigned)uwb->anchorId,
-                                              uwb->distance_m,
-                                              std_val);
+                    double std_val     = uwb->diff_db;
+                    double fpp_dbm_val = uwb->fpp_dbm;
+                    double rxp_dbm_val = uwb->rxp_dbm;
+
+                    uint8_t accum_data_val[25];
+                    memcpy(accum_data_val, uwb->accum_data, 25);
+
+                    n = snprintf(line, sizeof(line),
+                                 "UWB  %.3f  %u %.3f %.3f %.3f %.3f \r\n",
+                                 t_ms,
+                                 (unsigned)uwb->anchorId,
+                                 uwb->distance_m,
+                                 std_val,
+                                 fpp_dbm_val,
+                                 rxp_dbm_val);
                 }
                 break;
 

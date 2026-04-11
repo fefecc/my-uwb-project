@@ -218,10 +218,10 @@ void dw1000TagMain(void)
 
                 //  ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-                HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
-
                 NodeIndex++;
                 NodeIndex = NodeIndex % UWB_ANCHOR_TABLE_SIZE;
+
+                HAL_GPIO_TogglePin(LED2_GPIO_Port, LED2_Pin);
 
                 uwb_anchor_record_t *active_record = &g_anchor_table[NodeIndex];
 
@@ -441,7 +441,7 @@ void dw1000AnchorMain(void)
                 HAL_GPIO_TogglePin(LED3_GPIO_Port, LED3_Pin);
 
                 if (xTaskNotifyWait(0x00, UINT32_MAX, &notified_value,
-                                    pdMS_TO_TICKS(5000)) ==
+                                    pdMS_TO_TICKS(1000)) ==
                     pdTRUE) { // pdMS_TO_TICKS(3000) portMAX_DELAY
                     if (notified_value & UWB_EVENT_RX_DONE) {
                         uint16_t frame_len =
@@ -451,12 +451,8 @@ void dw1000AnchorMain(void)
                         uwb_frame_t poll_frame;
                         if (uwb_frame_decode(&poll_frame, dw1000rx_buffer,
                                              frame_len) == 0 &&
-                            poll_frame.type == UWB_FRAME_TYPE_POLL) {
-
-                            if (poll_frame.header.dest_addr != local_device.short_addr) {
-                                reset_anchor_state_machine(&g_current_anchor_state);
-                                break;
-                            }
+                            poll_frame.type == UWB_FRAME_TYPE_POLL &&
+                            poll_frame.header.dest_addr == local_device.short_addr) {
                             g_anchor_session.sequence_num =
                                 poll_frame.header.sequence_num;
                             g_anchor_session.tag_addr   = poll_frame.header.source_addr;
@@ -498,10 +494,10 @@ void dw1000AnchorMain(void)
                                           resp_frame.header.sequence_num);
                             }
                         } else {
-                            log_error(
-                                "anchor poll decode failed or frame type mismatch "
-                                "(len=%u)",
-                                frame_len);
+                            // log_error(
+                            //     "anchor poll decode failed or frame type mismatch "
+                            //     "(len=%u)",
+                            //     frame_len);
                         }
                     } else {
                         log_error("anchor rx error waiting POLL (event=0x%08lX)",
