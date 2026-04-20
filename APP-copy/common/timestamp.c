@@ -4,9 +4,9 @@
 #include "UM960samplingtask.h"
 #include "timestamp.h"
 #include "FreeRTOS.h"
-#include "task.h"
-#include "stdio.h"
 #include "main.h"
+#include "stdio.h"
+#include "task.h"
 
 extern TIM_HandleTypeDef htim16;
 
@@ -19,6 +19,7 @@ void utc_timestamp_from_gnss(const gnss_time_raw_t *raw)
     if (!raw) {
         return;
     }
+
     ts.week        = raw->wn;
     ts.tow_ms      = raw->ms;
     ts.leap_sec    = raw->leapSec;
@@ -26,7 +27,7 @@ void utc_timestamp_from_gnss(const gnss_time_raw_t *raw)
     ts.time_ref    = raw->timeRef;
 }
 
-void timestamp_tick_irq(void) // 本地时钟
+void timestamp_tick_irq(void)
 {
     UBaseType_t saved = taskENTER_CRITICAL_FROM_ISR();
 
@@ -35,32 +36,35 @@ void timestamp_tick_irq(void) // 本地时钟
     taskEXIT_CRITICAL_FROM_ISR(saved);
 }
 
+uint32_t get_local_clock_counter(void)
+{
+    return __HAL_TIM_GET_COUNTER(&htim16);
+}
+
 utc_global_timestamp_t gettimestamp(void)
 {
     utc_global_timestamp_t ts_out = {0};
 
     ts_out.week = g_timestamp.week;
 
-    uint32_t cnt  = __HAL_TIM_GET_COUNTER(&htim16);
+    uint32_t cnt  = get_local_clock_counter();
     ts_out.tow_ms = timestamp_s * 1000U + cnt / 20U;
-    ts_out.us     = cnt % 20U * 50U;
+    ts_out.us     = (cnt % 20U) * 50U;
 
     return ts_out;
 }
 
-void PPS_IRQHandler(void) // 外部中断的同步时钟
+void PPS_IRQHandler(void)
 {
     UBaseType_t saved = taskENTER_CRITICAL_FROM_ISR();
 
     uint32_t nowtimestamp_ms = ts.tow_ms;
 
-    nowtimestamp_ms = ((uint32_t)nowtimestamp_ms / 1000) * 1000 + 1000;
+    nowtimestamp_ms = (nowtimestamp_ms / 1000U) * 1000U + 1000U;
 
     g_timestamp.tow_ms = nowtimestamp_ms;
-
-    timestamp_s = g_timestamp.tow_ms / 1000;
-
-    g_timestamp.week = ts.week;
+    timestamp_s        = g_timestamp.tow_ms / 1000U;
+    g_timestamp.week   = ts.week;
 
     taskEXIT_CRITICAL_FROM_ISR(saved);
 }

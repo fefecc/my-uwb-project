@@ -25,17 +25,6 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "app_config.h"
-#include "app_log.h"
-#include "SDcardtask.h"
-#include "UM960samplingtask.h"
-#include "imudatadealtask.h"
-#include "imusamplingtask.h"
-#include "queue.h"
-#include "stdio.h"
-#include "DW1000samplingtask.h"
-#include "sdmmc.h"
-#include "fatfs.h"
 
 /* USER CODE END Includes */
 
@@ -52,8 +41,6 @@
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 
-extern TIM_HandleTypeDef htim16;
-
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -69,48 +56,6 @@ const osThreadAttr_t defaultTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
-/* Definitions for Init */
-osThreadId_t InitHandle;
-const osThreadAttr_t Init_attributes = {
-    .name       = "Init",
-    .stack_size = 256 * 4,
-    .priority   = (osPriority_t)osPriorityRealtime,
-};
-
-/* Definitions for dw1000sampling */
-osThreadId_t dw1000samplingtaskHandle;
-const osThreadAttr_t dw1000sampling_attributes = {
-    .name       = "dw1000sampling",
-    .stack_size = 1024 * 4,
-    .priority   = (osPriority_t)osPriorityRealtime,
-};
-
-/* Definitions for IMU */
-osThreadId_t IMUHandle;
-const osThreadAttr_t IMU_attributes = {
-    .name       = "IMU",
-    .stack_size = 256 * 4,
-    .priority   = (osPriority_t)osPriorityHigh,
-};
-
-/* Definitions for SDMMC */
-osThreadId_t SDMMCHandle;
-const osThreadAttr_t SDMMC_attributes = {
-    .name       = "SDMMC",
-    .stack_size = 1024 * 4,
-    .priority   = (osPriority_t)osPriorityBelowNormal,
-};
-
-/* Definitions for GNSS */
-osThreadId_t GNSSHandle;
-const osThreadAttr_t GNSS_attributes = {
-    .name       = "GNSS",
-    .stack_size = 1024 * 4,
-    .priority   = (osPriority_t)osPriorityNormal,
-};
-
-void InitTask(void *argument);
 
 /* USER CODE END FunctionPrototypes */
 
@@ -145,11 +90,6 @@ void MX_FREERTOS_Init(void) {
 
   /* USER CODE BEGIN RTOS_QUEUES */
     /* add queues, ... */
-    xIMUDataQueue = xQueueCreate(256, sizeof(imu_record_t));
-
-    xUM960SamplingQueue = xQueueCreate(32, sizeof(gnss_fusion_record_t));
-
-    xDW1000DataQueue = xQueueCreate(32, sizeof(uwb_result_queue_item_t)); // 发送距离数据
 
   /* USER CODE END RTOS_QUEUES */
 
@@ -158,43 +98,6 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-
-    const app_config_t *cfg = AppConfig_Get();
-
-    if (cfg->device_role == APP_DEVICE_ROLE_TAG) {
-
-        log_info("Sensor tasks enabled for TAG role");
-
-        InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
-        IMUHandle                = osThreadNew(IMUTask, NULL, &IMU_attributes);
-        SDMMCHandle              = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
-        GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
-        dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
-
-    }
-
-    else if (cfg->device_role == APP_DEVICE_ROLE_ANCHOR) {
-
-        log_info("Sensor tasks enabled for ANCHOR role");
-        dw1000samplingtaskHandle = osThreadNew(DW1000samplingtask, NULL, &dw1000sampling_attributes);
-        InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
-        // IMUHandle                = osThreadNew(IMUTask, NULL, &IMU_attributes);
-        //  SDMMCHandle              = osThreadNew(SDMMCTask, NULL, &SDMMC_attributes);
-        //  GNSSHandle               = osThreadNew(GNSSTask, NULL, &GNSS_attributes);
-        IMUHandle   = NULL;
-        SDMMCHandle = NULL;
-        GNSSHandle  = NULL;
-
-    } else {
-
-        log_info("Sensor tasks enabled failed");
-
-        InitHandle               = osThreadNew(InitTask, NULL, &Init_attributes);
-        dw1000samplingtaskHandle = NULL;
-        IMUHandle                = NULL;
-        SDMMCHandle              = NULL;
-        GNSSHandle               = NULL;
-    }
 
   /* USER CODE END RTOS_THREADS */
 
@@ -225,15 +128,5 @@ void StartDefaultTask(void *argument)
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 
-void InitTask(void *argument)
-{
-    // 此线程优先级极高，在线程中完成各个中断的初始化，然后删除该线程
-    //  中断初始化代码，禁止在main函数中初始化
-    //  GNSSInit();
-    HAL_TIM_Base_Start_IT(&htim16);
-
-    // 3. 删除任务
-    osThreadTerminate(osThreadGetId());
-}
 /* USER CODE END Application */
 
