@@ -99,7 +99,7 @@ targets:
       OpenOCD:
         baseAddr: "0x08000000"
         bin: ""
-        interface: stlink
+        interface: stlink-v2
         target: stm32h7x
     uploader: OpenOCD
   Release:

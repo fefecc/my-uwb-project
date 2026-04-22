@@ -186,11 +186,14 @@
 - 基础设备配置
   - 写入 `Flash`
   - 包括短 `PAN`、`ID`、角色 `Anchor/Tag`
+  - 运行模式下作为 UWB 模组的主要配置来源
 
 - 静态外参
   - 保存在头文件中
   - 作为静态变量由系统直接调用
   - 不通过串口写入
+
+同时保留一份默认静态基础配置，用于 Flash 中没有有效配置时的降级启动。
 
 ### 3.5 运行模式
 
@@ -199,10 +202,19 @@
 之后会在后面添加
 
 - 读取 `Flash` 中的基础设备配置
+- 如果 `Flash` 中没有有效基础配置，则使用工程内默认静态基础配置
 - 读取工程中的静态外参
-- 根据角色进入对应运行流程
+- 根据最终生效的角色进入对应运行流程
+- 将最终生效的基础配置传给 UWB 模组
 - 启动各业务线程
 - 进入采样、处理和存储阶段
+
+这里的“最终生效的基础配置”指：
+
+- 优先使用 `Flash` 中校验通过的配置
+- 如果 `Flash` 配置不存在、版本不匹配、长度不匹配或角色非法，则使用默认静态配置
+
+UWB 模组使用的 `PAN ID`、短地址、角色 `Anchor/Tag` 等基础参数，都来自这份最终生效的配置。也就是说，UWB 模组不单独维护另一套基础配置来源。
 
 
 ---
@@ -231,7 +243,7 @@
 - `defaultTask`
   - 系统监控线程
   - 负责线程状态监控
-  - 负责 `TIM16` 时基相关工作
+  - 负责尽早初始化时间服务和 `TIM16` 本地连续时钟
   - 初始化阶段优先级较高，注册完成后降为最低优先级
 
 - `usartCMDTask`
@@ -328,159 +340,343 @@ UWB 协议栈的线程模型和重构边界不在本文展开，统一以 [uwb-d
 
 ### 4.4 时间与时基设计
 
-当前系统的时间基准由 `TIM16 + GNSS + PPS` 共同完成。这一部分应当作为底层时间服务独立实现，不直接写死在某个业务线程中。
+时间服务作为独立公共服务实现，不直接写死在 `defaultTask`、`GNSSTask` 或其他业务线程里。
 
-整体设计目标是同时保留两类时间能力：
+当前时间获取的硬件基础仍然是 `TIM16 + GNSS`：
 
-- 本地高分辨率计数时间
-- 带有效性标记的 UTC 时间
+- `TIM16` 生成本地连续时钟
+- `GNSS` 提供 UTC 时间，用来同步本地 UTC 时钟
+- `PPS` 只作为 GNSS UTC 与本地连续时钟之间的整秒对齐边沿，不单独生成时间
 
-也就是说，系统内部最终应同时维护：
+当前时间结构需要明确拆成三层：
 
-- 一个由本地计数器连续推进的时间基准
-- 一个与 `GNSS + PPS` 对齐后的 UTC 时间基准
+- 外部输入 UTC 时钟
+  - 当前来源为 `GNSS` 解析出的 UTC
+  - 它是本地 UTC 时钟的校准来源
+  - GNSS 解析线程只把 UTC 写入缓存
+  - 不直接作为业务线程读取的最终时间
 
-### 时间基准组成
+- 本地 UTC 时钟
+  - 由时间服务维护
+  - 通过 GNSS UTC 进行同步
+  - 通过 PPS 边沿把 GNSS UTC 锁定到本地连续时钟的具体时刻
+  - 同步完成后，基于本地连续时钟继续向前推进
+  - 对外带 `valid` / `sync_state` 标志，用于说明当前 UTC 是否可信
+
+- 本地连续时钟
+  - 由 `TIM16` 连续推进
+  - 上电后从 `0` 或初始化基准开始单调递增
+  - 不因为外部 UTC 修正而回拨或跳变
+  - 始终可用，用于采样排序、耗时计算、数据连续性判断
+
+也就是说，上层线程以后不要直接读 `TIM16`、不要直接读 GNSS 缓存，而是统一通过时间服务获取：
+
+- 完整时间戳结构
+- 或只获取本地连续时钟
+
+#### 时间源组成
 
 - `TIM16`
-  - 作为本地高精度计数器使用
+  - 作为本地连续时钟的唯一生成来源
   - 当前约定为 `1 s` 溢出一次
-  - 当前约定计数分辨率为 `20 us`
-  - 该计数器始终连续运行，作为本地时间推进依据
+  - 当前计数器值按 `ARR + 1` 折算为当前秒内的浮点毫秒
+  - 中断逻辑负责累加连续的 `uint64_t` 本地整数秒
+  - 该本地时间是系统最底层的连续时间基准
+  - UTC 同步、失锁、重锁都不能修改本地连续时钟本身
 
-- `GNSS`
-  - 在每次解析到有效报文时，将其中的 UTC 信息提取出来
-  - 提取后的 UTC 信息先放入本地缓存结构体中
-  - 此时只是“收到有效候选时间”，并不代表系统已经完成 UTC 锁定
+- `GNSS UTC`
+  - 在每次解析到有效报文时，将 UTC 时间提取为“时间周 + 周内毫秒”
+  - 解析结果写入“GNSS UTC 缓存”
+  - 收到 GNSS UTC 只代表外部候选时间有效，不代表本地 UTC 时钟已经锁定
+  - 写缓存时不更新当前 UTC 整秒时钟
+  - GNSS 只负责同步本地 UTC 时钟，不参与本地连续时钟生成
 
 - `PPS`
+  - 用于把 GNSS UTC 对齐到本地连续时钟的某一个时刻
   - 当 `PPS` 脉冲触发时，取最近一次有效 GNSS UTC 缓存
-  - 在该缓存时间基础上加 `1 s`，作为当前 `PPS` 对应的 UTC 整秒时刻
-  - 同时记录该时刻下本地 `TIM16` 的基准计数值
+  - 将缓存中的 `week_ms` 加 `1000 ms`，作为当前 `PPS` 对应的 UTC 整秒时钟
+  - 如果 `week_ms + 1000 ms` 超过一周，则 `week` 加 `1`，`week_ms` 回绕到下一周
+  - 同时记录这一刻的本地连续时钟值，形成本地 UTC 时钟的同步锚点
+  - PPS 是同步边沿，不是独立时间源
 
-### UTC 锁定与失锁策略
+#### 建议文件边界
 
-当前 UTC 不应在收到第一帧 GNSS 时间后立即判定为可靠，而是需要一个锁定过程。
+时间模块先按公共服务落地，建议放在：
 
-建议策略如下：
+- `APP/service/time_service.h`
+- `APP/service/time_service.c`
+
+该模块只负责：
+
+- 初始化本地连续时钟
+- 维护 GNSS UTC 缓存
+- 维护本地 UTC 同步状态
+- 处理 `PPS` 对齐事件
+- 提供统一 `get` 接口
+
+其他模块只做输入或读取：
+
+- `GNSSTask` 解析出 UTC 后，调用时间服务写入 GNSS UTC 缓存
+- `PPS` 中断触发后，时间服务读取 GNSS UTC 缓存，将缓存 `week_ms` 加 `1000 ms` 后更新当前 UTC 整秒时钟
+- `IMUTask`、`GNSSTask`、数据整理线程、日志线程只调用时间服务读取时间戳
+
+#### 时间结构建议
+
+```c
+typedef enum {
+    TIME_SYNC_NONE = 0,
+    TIME_SYNC_LOCKED,
+    TIME_SYNC_HOLDOVER,
+    TIME_SYNC_LOST,
+} TimeSyncState;
+
+typedef struct {
+    uint64_t sec;
+    float ms;
+} TimeLocalClock;
+
+typedef struct {
+    uint32_t week;
+    uint32_t week_ms;
+} TimeUtcClock;
+
+typedef struct {
+    bool valid;
+    TimeUtcClock utc;
+    uint32_t seq;
+} TimeGnssUtcCache;
+
+typedef struct {
+    TimeLocalClock local_clock;
+    TimeUtcClock local_utc;
+    bool utc_valid;
+    TimeSyncState sync_state;
+    uint32_t sync_seq;
+} TimeTimestamp;
+```
+
+字段含义如下：
+
+- `TimeLocalClock`
+  - 系统本地连续时钟
+  - 由 `TIM16` 生成
+  - `sec` 是累计整数秒
+  - `ms` 是当前秒内的浮点毫秒，适合日志输出和小窗口排序
+
+- `TimeUtcClock`
+  - UTC 时间，采用“时间周 + 周内毫秒”表达
+  - `week` 表示 UTC 时间周
+  - `week_ms` 表示当前周内的毫秒数
+  - `week_ms` 范围为 `0 ~ 604799999`
+  - 不单独表达可信状态，可信状态由外层 `valid` 或 `utc_valid` 表达
+
+- `TimeGnssUtcCache`
+  - GNSS UTC 缓存
+  - 当前由 GNSS 解析线程更新
+  - 写入时只保存最近一次 GNSS UTC
+  - 不在写入时更新当前 UTC 整秒时钟
+  - `seq` 用于判断输入是否更新
+
+- `TimeTimestamp`
+  - 对外返回的完整时间戳结构
+  - `local_clock` 始终有效
+  - `local_utc` 是本地 UTC 时钟计算结果
+  - `utc_valid` 表示当前本地 UTC 是否已经同步且可信
+  - `sync_state` 表示 UTC 同步状态
+
+#### 本地连续时钟规则
+
+本地连续时钟是整个系统的时间底座，必须满足以下规则：
+
+- 上电初始化后单调递增
+- 不受 UTC 校时影响
+- 不因为 UTC 失锁而停止
+- 允许从 `0` 开始计数
+- 需要正确处理 `TIM16` 溢出
+- 所有采样数据至少必须携带本地连续时钟
+
+本地连续时钟的典型用途：
+
+- 多源数据排序
+- 采样时间戳
+- 线程运行耗时统计
+- 判断数据是否连续
+- UTC 无效时作为降级时间基准
+
+#### 本地 UTC 时钟规则
+
+本地 UTC 时钟不是直接等于 GNSS 报文中的 UTC，而是由时间服务维护的内部时钟。
+
+它的建立过程如下：
+
+- GNSS 线程解析出 UTC 后，先写入 GNSS UTC 缓存
+- 写 GNSS UTC 缓存时，只更新缓存，不更新当前 UTC 整秒时钟
+- PPS 到来时，时间服务读取最近一次 GNSS UTC 缓存
+- 时间服务把缓存中的 `week_ms` 加 `1000 ms`，并记录：
+  - 当前 PPS 对应的 UTC 整秒时钟
+  - 当前 PPS 对应的本地连续时钟
+- 之后读取 UTC 时，通过“同步锚点 UTC + 本地连续时钟增量”计算当前 UTC
+
+当 GNSS UTC 缓存和 PPS 正常时：
+
+- 每次 PPS 到来都会使用最近的 GNSS UTC 缓存刷新本地 UTC 整秒时钟
+- `utc_valid = true`
+- `sync_state = TIME_SYNC_LOCKED`
+
+当 GNSS UTC 或 PPS 短时间中断但本地连续时钟仍正常时：
+
+- 本地 UTC 可以继续按本地连续时钟外推
+- `sync_state` 可进入 `TIME_SYNC_HOLDOVER`
+- 是否保持 `utc_valid = true` 取决于允许的保持时间
+
+当 GNSS UTC 或 PPS 超过允许时间未恢复时：
+
+- `utc_valid = false`
+- `sync_state = TIME_SYNC_LOST`
+- 本地连续时钟继续有效
+- 上层仍然可以获取完整时间戳，但不能把其中的 UTC 当作可信 UTC
+
+#### UTC 锁定与失锁策略
+
+当前建议策略如下：
 
 - 上电时，UTC 状态默认为无效
-- 连续 `5` 帧 GNSS 时间数据稳定后，再认为 UTC 已锁定
-- 锁定完成后，将 UTC 状态标记为 `valid = true`
-- 如果后续 `PPS` 连续丢失，例如连续 `3 s` 以上未收到，则认为 UTC 失锁
-- 失锁后，UTC 状态重新置为无效，等待重新锁定
+- 收到有效 GNSS UTC 后，只写入 GNSS UTC 缓存
+- 等待下一次有效 `PPS`，用 `GNSS UTC 缓存 + 1000 ms` 建立本地 UTC 整秒时钟
+- 锚点建立后，进入 `TIME_SYNC_LOCKED`
+- 如果后续 `PPS` 短时间丢失，可以进入 `TIME_SYNC_HOLDOVER`
+- 如果连续 `3 s` 以上未收到有效 `PPS`，进入 `TIME_SYNC_LOST`
+- 失锁后，等待新的 GNSS UTC 缓存和下一次 `PPS` 重新建立锚点
 
-也就是说，`valid` 的语义不是“收到过一次 GNSS 时间”，而是“当前 UTC 基准已经建立并且仍然可信”。
+这里的 `utc_valid` 语义是：
 
-### 失锁后的时间推进方式
+- `true`：本地 UTC 时钟已经同步，并且仍处于可信窗口内
+- `false`：本地 UTC 时钟未建立或已经失去可信性
 
-当 UTC 已锁定时：
+#### 对外接口建议
 
-- 系统优先使用 `PPS + GNSS` 对齐后的 UTC 基准
-- 再结合本地 `TIM16` 增量计算当前时间
+时间服务至少提供以下接口：
 
-当 UTC 失锁时：
+```c
+void TimeService_Init(void);
 
-- UTC 结构中的 `valid` 置为无效
-- 系统仍然继续使用本地计数器推进本地时间
-- 也就是说，本地时间不会中断，但 UTC 精度与可靠性不再保证
+void TimeService_OnTim16Overflow(void);
 
-这样处理的好处是：
+void TimeService_WriteUtcCache(const TimeUtcClock *utc);
 
-- 时间戳始终连续
-- UTC 是否可信有明确标志位
-- 上层线程可以根据 `valid` 决定是否把当前时间当作“可信 UTC”使用
+void TimeService_OnPpsIrq(void);
 
-### 对外时间接口建议
+bool TimeService_GetTimestamp(TimeTimestamp *out);
 
-建议提供一个统一的 `get` 函数，对外返回完整时间结构。
+bool TimeService_GetLocalClock(TimeLocalClock *out);
+```
 
-该结构至少包含两部分：
+接口行为约定如下：
 
-- 本地计数器换算出的当前时间
-- 当前 UTC 时间及其 `valid` 标志
+- `TimeService_Init`
+  - 初始化时间服务内部状态
+  - 清空 GNSS UTC 缓存
+  - 清空本地 UTC 锚点
+  - 启动本地连续时钟
 
-这样设计后，上层模块在取时间时可以同时拿到：
+- `TimeService_OnTim16Overflow`
+  - 在 `TIM16` 溢出中断或等效位置调用
+  - 当前 `TIM16` 配置为 `1 s` 溢出一次，因此该接口负责累加本地整数秒
 
-- 连续时间
-- UTC 时间
-- UTC 是否可信
+- `TimeService_WriteUtcCache`
+  - 由 GNSS 解析线程调用
+  - 只把解析出的 GNSS UTC 写入缓存
+  - 写入后设置缓存 `valid = true`
+  - 写入后递增缓存 `seq`
+  - 不更新当前 UTC 整秒时钟
+  - 不直接修改本地连续时钟
 
-这比只返回单一时间值更适合后续数据采样、日志记录和时序分析。
+- `TimeService_OnPpsIrq`
+  - 由 `PPS` 中断或中断下半部调用
+  - 读取当前本地连续时钟
+  - 读取最近一次有效 GNSS UTC 缓存
+  - 将缓存 UTC 的 `week_ms` 加 `1000 ms`
+  - 使用加 `1000 ms` 后的 UTC 建立或刷新当前 UTC 整秒时钟
+  - 记录该 UTC 整秒对应的本地连续时钟
+
+- `TimeService_GetTimestamp`
+  - 返回完整 `TimeTimestamp`
+  - `local_clock` 始终有效
+  - `local_utc` 根据当前同步状态计算
+  - `utc_valid` 明确告诉调用者 UTC 是否可信
+
+- `TimeService_GetLocalClock`
+  - 只返回本地连续时钟
+  - 用于只关心排序、耗时和连续性的场景
 
 #### 时间同步伪代码
 
 ```c
-struct GnssUtcCache {
-    bool valid;
-    UtcTime utc_from_gnss;
-    uint32_t seq;
-}; // 最近一次解析出的 GNSS UTC 缓存
+TimeGnssUtcCache gnss_utc_cache;
 
-struct SystemUtcBase {
+struct LocalUtcAnchor {
     bool valid;
-    UtcTime pps_utc_base;
-    uint32_t tim16_base_count;
+    TimeUtcClock utc_at_anchor;
+    TimeLocalClock local_at_anchor;
+    uint32_t sync_seq;
 };
 
 on_gnss_message_parsed(msg):
     if msg contains valid utc:
-        gnss_cache.utc_from_gnss = parse_utc(msg)
-        gnss_cache.valid = true
-        gnss_cache.seq++
-        update_stable_counter()
-        if stable_counter >= 5:
-            utc_lock_ready = true
+        utc = parse_utc(msg)
+        TimeService_WriteUtcCache(&utc)
+
+TimeService_WriteUtcCache(utc):
+    gnss_utc_cache.utc = *utc
+    gnss_utc_cache.valid = true
+    gnss_utc_cache.seq++
 
 on_pps_irq():
-    if gnss_cache.valid and utc_lock_ready:
-        system_utc_base.pps_utc_base = gnss_cache.utc_from_gnss + 1 second
-        system_utc_base.tim16_base_count = TIM16.current_count()
-        system_utc_base.valid = true
-        pps_loss_counter = 0
+    TimeService_OnPpsIrq()
 
-on_pps_timeout():
-    pps_loss_counter++
-    if pps_loss_counter >= 2:
-        system_utc_base.valid = false
-        utc_lock_ready = false
+TimeService_OnPpsIrq():
+    local_now = read_local_continuous_clock()
 
-get_system_timestamp():
-    if system_utc_base.valid:
-        delta = TIM16.current_count() - system_utc_base.tim16_base_count
-        return system_utc_base.pps_utc_base + delta
+    if gnss_utc_cache.valid:
+        local_utc_anchor.utc_at_anchor = utc_add_ms(gnss_utc_cache.utc, 1000)
+        local_utc_anchor.local_at_anchor = local_now
+        local_utc_anchor.valid = true
+        sync_state = TIME_SYNC_LOCKED
+        utc_valid = true
+        sync_seq++
+
+TimeService_GetTimestamp(out):
+    out->local_clock = read_local_continuous_clock()
+
+    if local_utc_anchor.valid:
+        delta_ms = local_clock_delta_ms(out->local_clock, local_utc_anchor.local_at_anchor)
+        out->local_utc = utc_add_ms(local_utc_anchor.utc_at_anchor, delta_ms)
+        out->utc_valid = utc_valid
+        out->sync_state = sync_state
     else:
-        return local_fallback_timestamp()
+        clear(out->local_utc)
+        out->utc_valid = false
+        out->sync_state = TIME_SYNC_NONE
+
+TimeService_GetLocalClock(out):
+    *out = read_local_continuous_clock()
 ```
 
-#### 建议的时间输出结构
+这里需要注意，`utc_add_ms(gnss_utc_cache.utc, 1000)` 只需要处理 `week_ms` 的一周回绕：
 
-```c
-typedef struct {
-    LocalTime local_time;
-    UtcTime utc_time;
-    bool utc_valid;
-} SystemTimestamp;
-```
+- 一周为 `604800000 ms`
+- 如果 `week_ms + 1000 < 604800000`，只更新 `week_ms`
+- 如果 `week_ms + 1000 >= 604800000`，则 `week += 1`，`week_ms = week_ms + 1000 - 604800000`
 
-建议的对外行为如下：
-
-- `local_time`
-  - 始终可用
-  - 由本地计数器连续推进
-
-- `utc_time`
-  - 仅在 UTC 锁定时作为可信 UTC 使用
-
-- `utc_valid`
-  - 表示当前 UTC 是否处于锁定且可信状态
+由于 UTC 使用毫秒表达，`TimeService_GetTimestamp` 中从本地连续时钟得到的增量也需要先换算成毫秒，再叠加到 UTC 锚点上。
 
 这样整理后，时间模块的职责会比较清晰：
 
-- `GNSS` 提供 UTC 候选值
-- `PPS` 提供整秒对齐
-- `TIM16` 提供连续高分辨率本地时间
-- `valid` 表示 UTC 是否可信
+- GNSS UTC 写入函数只负责更新缓存
+- PPS 中断处理函数负责用缓存 UTC 加 `1000 ms` 更新当前 UTC 整秒时钟
+- 本地 UTC 时钟负责对外表达 UTC 时间
+- 本地连续时钟负责提供永不停顿的系统时间基准
+- 所有业务线程通过统一接口读取时间
 
 
 
@@ -490,7 +686,8 @@ typedef struct {
 
 当前职责如下：
 
-- 尽早完成 `TIM16` 相关时基初始化
+- 尽早完成 `TimeService` 初始化
+- 启动或确认 `TIM16` 本地连续时钟
 - 监控其他线程是否正常运行
 - 输出必要的系统状态
 - 初始化阶段使用较高优先级
@@ -500,7 +697,8 @@ typedef struct {
 
 ```c
 defaultTask():
-    init_tim16_timebase()
+    TimeService_Init()
+    start_tim16_local_clock()
     register_system_monitors()
     lower_self_priority_to_lowest()
 
@@ -624,15 +822,16 @@ usartCMDTask():
 
 ### 4.7 `GNSSTask`
 
-`GNSSTask` 负责 GNSS 数据接收、协议解析和时间缓存更新。
+`GNSSTask` 负责 GNSS 数据接收、协议解析，并把解析出的 UTC 写入时间服务的 GNSS UTC 缓存。
 
 当前要求如下：
 
 - 使用原有流式解析策略
 - 通过 `IDLE` 中断触发解析
 - 保留原始精度，不允许人为减少精度
-- 在解析过程中更新 GNSS UTC 缓存
-- 将“GNSS 数据 + 本地时间戳”打包后发送到消息队列
+- 在解析过程中提取 GNSS UTC，并调用 `TimeService_WriteUtcCache`
+- GNSS UTC 只用于同步本地 UTC 时钟，不生成本地连续时钟
+- 将“GNSS 数据 + 完整时间戳”打包后发送到消息队列
 
 #### `GNSSTask` 伪代码
 
@@ -646,9 +845,10 @@ GNSSTask():
 
         for each frame in frames:
             if frame.contains_valid_utc():
-                update_gnss_utc_cache(frame)
+                utc = parse_utc_from_gnss(frame)
+                TimeService_WriteUtcCache(&utc)
 
-            node.timestamp = get_system_timestamp()
+            TimeService_GetTimestamp(&node.timestamp)
             node.payload = frame.data
             queue_send(node)
 ```
@@ -656,6 +856,33 @@ GNSSTask():
 ### 4.8 UWB 协议栈
 
 UWB 协议栈的线程模型、层次边界、空口协议和落地顺序统一以 [uwb-designed.md](uwb-designed.md) 为准，本文不再维护旧 UWB 线程描述。
+
+#### 与主系统配置的衔接
+
+UWB 模组初始化时使用主系统已经解析完成的基础配置：
+
+- `PAN ID`
+- 本机短地址 `short_addr`
+- 角色 `Anchor/Tag`
+- 必要的帧控制字段
+
+配置来源规则如下：
+
+1. 运行模式启动时，配置服务先读取 `Flash` 中的基础配置。
+2. 如果 `Flash` 配置校验通过，则该配置作为当前运行配置。
+3. 如果 `Flash` 配置无效或尚未写入，则配置服务加载默认静态基础配置。
+4. UWB 模组只接收这份当前运行配置，不直接绕过配置服务读取 `Flash`。
+
+因此，UWB 栈内部不再判断“配置来自 Flash 还是默认值”。它只关心当前传入的 `pan_id`、`short_addr` 和 `role` 是否可用，并按角色进入对应的 Tag 或 Anchor 行为。
+
+后续落代码时，建议主系统提供类似下面的初始化边界：
+
+```c
+ConfigService_Load();
+UWB_DeviceInitFromConfig();
+```
+
+其中 `ConfigService_Load()` 内部负责完成 Flash 配置校验和默认静态配置兜底，`UWB_DeviceInitFromConfig()` 只读取配置服务当前生效的配置。
 
 ### 4.9 `IMUTask`
 
@@ -667,7 +894,7 @@ UWB 协议栈的线程模型、层次边界、空口协议和落地顺序统一�
 - 中断只负责通知线程
 - 线程中完成 SPI 读取
 - 本线程相关静态配置保存在自己的线程文件中
-- 采样完成后，按与 GNSS 相同的方式进行“数据 + 本地时间戳”打包
+- 采样完成后，按与 GNSS 相同的方式进行“数据 + 完整时间戳”打包
 - 打包后发送到消息队列
 
 #### `IMUTask` 伪代码
@@ -679,7 +906,7 @@ IMUTask():
     while true:
         wait_imu_irq_notify()
         imu_data = spi_read_imu()
-        node.timestamp = get_system_timestamp()
+        TimeService_GetTimestamp(&node.timestamp)
         node.payload = imu_data
         queue_send(node)
 ```
@@ -694,10 +921,11 @@ IMUTask():
 - 开辟节点挂载区作为临时排序空间
 - 由于时间上可能存在微小反转，执行小范围排序
 - 当前排序窗口先按 `10` 个挂载点设计
-- 排序完成后，将数据压入写卡 FIFO
 - 在该线程中完成 ASCII 文本打包
+- 排序完成后，将 ASCII 数据连续写入全局 SD 写卡 FIFO
+- 当 FIFO 中某个 `16 KB` 块写满后，通知 `SD` 写入线程写盘
 
-当前 SD 数据缓冲区规划与前面的日志缓冲区保持一致，也采用“主一备一”双缓冲机制。
+当前 SD 数据缓冲区是一个全局写卡 FIFO，但物理上按双缓冲实现。
 
 具体规划如下：
 
@@ -705,13 +933,18 @@ IMUTask():
 - 缓冲区数量：2 块
 - 组织方式：主缓冲区 + 备缓冲区
 - 总缓存容量：`32 KB`
+- 写入单位：数据整理线程按字节连续写入
+- 写盘单位：`SD` 写入线程按 `16 KB` 整块写入
 
 关于这组 SD 数据缓冲区，当前明确以下规则：
 
 - 数据整理线程始终向当前可写缓冲区写入
-- 当主缓冲区写满后，通知 `SD` 写入线程优先发送主缓冲区
-- 数据整理线程切换到备缓冲区继续写入
-- 当备缓冲区写满后，通知 `SD` 写入线程发送备缓冲区
+- ASCII 转换在数据整理线程中完成
+- `SD` 写入线程不再逐条处理 `AppDataNode`
+- `SD` 写入线程不再逐条转换 ASCII
+- 当主缓冲区写满 `16 KB` 后，通知 `SD` 写入线程写主缓冲区
+- 数据整理线程立即切换到备缓冲区继续写入
+- 当备缓冲区写满 `16 KB` 后，通知 `SD` 写入线程写备缓冲区
 - 通知时必须明确当前准备写盘的是主缓冲区还是备缓冲区
 - 正在写盘的缓冲区视为锁定状态，不允许继续写入
 - 写入线程只能写未锁定、未满的那一块缓冲区
@@ -724,10 +957,12 @@ IMUTask():
 
 边界处理原则如下：
 
-- 当节点数据在 `16 KB` 位置被截断时，不做强制补齐
-- 直接继续向后写
-- SD 写入线程并行写当前块
-- 剩余数据在下一次继续写入
+- 当一条 ASCII 数据写入时会跨越 `16 KB` 边界，不做强制补齐
+- 先把能写入当前块的前半段写满当前块
+- 当前块达到 `16 KB` 后，立刻标记为 ready 并通知 `SD` 写入线程
+- 数据整理线程切换到另一块缓冲区
+- 剩余的 ASCII 数据继续写入下一块缓冲区
+- 也就是说，一条 ASCII 数据允许跨越两个 `16 KB` 块
 - 当主缓冲区和备缓冲区同时都处于满或锁定状态时，直接上报 `error`
 - `error` 中需要明确标识当前是哪个数据来源线程导致写入速度与存储速度不匹配
 
@@ -757,14 +992,17 @@ IMUTask():
         转换为 ASCII 数据
               |
               v
-        压入 16KB 主/备缓冲区
+        连续写入 32KB SD FIFO
               |
               v
-        当前缓冲区满？
+        当前 16KB 块满？
            |        |
            | 否     | 是
            v        v
-        继续收集   通知 SD 写入线程
+        继续写入   标记当前块 ready
+                     |
+                     v
+              通知 SD 写入线程
                      |
                      v
                 还有空闲缓冲区？
@@ -780,7 +1018,7 @@ IMUTask():
 ```c
 DataSortTask():
     init_sort_buffer(10)
-    init_sd_double_buffer(16KB x 2)
+    init_global_sd_fifo(16KB x 2)
 
     while true:
         node = queue_receive()
@@ -791,15 +1029,26 @@ DataSortTask():
 
             for each node in sort_buffer:
                 ascii_line = convert_node_to_ascii(node)
-                sd_buffer_write(ascii_line, allow_split=true)
+                sd_fifo_write(ascii_line, allow_split=true)
 
             sort_buffer.clear()
 
-        if current_sd_buffer_full():
-            notify_sd_writer(which_buffer_is_ready())
+sd_fifo_write(data, allow_split=true):
+    while data.remaining > 0:
+        writable = get_current_writable_block()
 
-            if no_free_sd_buffer():
-                report_error(source_thread_id)
+        if writable == NULL:
+            report_error(source_thread_id)
+            return
+
+        copied = copy_to_current_block(data)
+
+        if current_block_full():
+            mark_current_block_ready()
+            notify_sd_writer(current_block_id)
+            switch_to_next_block()
+
+        data.advance(copied)
 ```
 
 ### 4.11 `SD` 写入线程
@@ -814,9 +1063,18 @@ DataSortTask():
 - 检查现有文件名并创建新文件
 - 文件名采用类似：
   - `uwb-gnss-imu-sampling-1.log`
-- 将整理线程已经转换好的 ASCII 数据直接写入文件
+- 等待数据整理线程发送 `16 KB` 块 ready 通知
+- 每次收到通知后，一次性写入对应的 `16 KB` 数据块
 
-当前要求是不写二进制文件，直接写 ASCII 文本。也就是说，文本转换必须在“数据接收 / 整理线程”中完成，写卡线程只处理最终可落盘数据。
+当前要求是不写二进制文件，直接写 ASCII 文本。也就是说，文本转换必须在“数据接收 / 整理线程”中完成，写卡线程只处理最终可落盘的 `16 KB` ASCII 数据块。
+
+这里需要特别明确：
+
+- `SD` 写入线程不从数据节点队列读取 `AppDataNode`
+- `SD` 写入线程不负责排序
+- `SD` 写入线程不负责 ASCII 转换
+- `SD` 写入线程只等待“主缓冲区 ready”或“备缓冲区 ready”的通知
+- `SD` 写入线程每次写盘单位固定为 `16 KB`
 
 在 SD 写盘链路中，写入线程接收到通知时，也必须明确当前要写的是：
 
@@ -877,7 +1135,9 @@ SDWriterTask():
         buffer_id = wait_sd_write_notify()
         block = get_sd_ready_buffer(buffer_id)
         if block.valid:
-            file_write(block.data)
+            lock_sd_buffer(buffer_id)
+            file_write(block.data, 16KB)
+            file_sync_if_needed()
             release_sd_buffer(buffer_id)
 ```
 

@@ -1,5 +1,299 @@
 # UWB Data Logger Project
 
+## 0. 当前版本快速测试说明
+
+本节记录当前代码已经落地、可以直接测试的功能。后面的章节仍保留工程背景和重构说明，测试时优先以本节为准。
+
+### 0.1 启动模式
+
+系统上电或复位后会读取 `USER_KEY` 的当前电平来决定启动模式：
+
+- `USER_KEY` 被按下：进入配置模式 `APP_MODE_CONFIG`。
+- `USER_KEY` 未按下：进入运行模式 `APP_MODE_RUN`。
+
+配置模式和运行模式都会初始化以下基础服务：
+
+- 日志服务 `LogService`
+- 时间服务 `TimeService`
+- 配置服务 `ConfigService`
+- 数据队列 `DataService`
+- SD 双块缓冲 `init_sd_fifo`
+- 默认任务 `appDefault`
+- SD 写入任务 `sdWriter`
+- 数据排序任务 `dataSort`
+- LED 任务 `ledTask`
+- 按键任务 `keyTask`
+
+配置模式额外启动：
+
+- 串口命令任务 `usartCMD`
+
+运行模式额外启动：
+
+- UWB 协议栈：`uwbPhy`、`uwbLink`、`uwbApp`
+- GNSS 接收解析任务 `gnssTask`
+- IMU 采样任务 `imuTask`
+
+### 0.2 串口连接参数
+
+配置命令和日志共用 `USART1`：
+
+- 引脚：`PA9 TX`、`PA10 RX`
+- 波特率：`460800`
+- 数据位：`8`
+- 停止位：`1`
+- 校验：`None`
+- 硬件流控：`None`
+
+进入配置模式后，串口会输出：
+
+```text
+config mode
+```
+
+每条命令以 `\r` 或 `\n` 结束。
+
+### 0.3 当前能够解析的配置命令
+
+#### `read`
+
+读取当前已加载配置。
+
+示例：
+
+```text
+read
+```
+
+成功输出示例：
+
+```text
+pan=0xF0F0 short=0x0034 role=1 log=2
+```
+
+字段含义：
+
+- `pan`：UWB PAN ID。
+- `short`：本机 16 bit 短地址。
+- `role`：设备角色，`0` 表示 Tag，`1` 表示 Anchor。
+- `log`：日志等级字段，当前串口命令只能读取，不能修改。
+
+#### `set <pan_hex> <short_hex> <role>`
+
+写入基础设备配置到 Flash。
+
+参数：
+
+- `pan_hex`：十六进制 PAN ID，例如 `F0F0`。
+- `short_hex`：十六进制短地址，例如 `0034`。
+- `role`：十进制角色，`0` 为 Tag，`1` 为 Anchor。
+
+示例，设置为 Anchor：
+
+```text
+set F0F0 0034 1
+```
+
+示例，设置为 Tag：
+
+```text
+set F0F0 0101 0
+```
+
+成功输出：
+
+```text
+set saved
+```
+
+失败输出：
+
+```text
+set failed
+```
+
+注意：
+
+- 当前命令只修改 `pan_id`、`short_addr`、`role`。
+- `frame_ctrl`、`log_level` 会保留当前值；如果当前没有配置，则使用默认值。
+- `pan_hex` 和 `short_hex` 在代码里会转换为 `uint16_t`，测试时请控制在 `0x0000` 到 `0xFFFF`。
+- `role` 请只使用 `0` 或 `1`。
+
+#### `default`
+
+恢复默认配置并保存到 Flash。
+
+示例：
+
+```text
+default
+```
+
+成功输出：
+
+```text
+default saved
+```
+
+失败输出：
+
+```text
+default save failed
+```
+
+当前默认配置：
+
+```text
+pan=0xF0F0
+short=0x0034
+frame_ctrl=41 88
+role=1
+log=2
+```
+
+#### `reboot`
+
+软件复位。
+
+示例：
+
+```text
+reboot
+```
+
+输出：
+
+```text
+reboot
+```
+
+执行后会延时约 20 ms，然后调用 `NVIC_SystemReset()`。
+
+#### 未识别命令
+
+不能匹配上述命令时，会输出帮助信息：
+
+```text
+cmd: read | default | set <pan_hex> <short_hex> <role> | reboot
+```
+
+实现细节：
+
+- `read`、`default`、`reboot` 使用前缀匹配，例如 `read123` 也会按 `read` 处理。
+- `set` 使用 `sscanf(line, "set %x %x %u", ...)` 解析，必须能解析出 3 个参数才会执行保存。
+
+### 0.4 推荐测试流程
+
+#### 配置一台 Anchor
+
+1. 按住 `USER_KEY`，复位或上电。
+2. 串口确认看到：
+
+```text
+config mode
+```
+
+3. 读取当前配置：
+
+```text
+read
+```
+
+4. 写入 Anchor 配置：
+
+```text
+set F0F0 0034 1
+```
+
+5. 再次读取确认：
+
+```text
+read
+```
+
+6. 输入复位命令：
+
+```text
+reboot
+```
+
+7. 松开 `USER_KEY`，让设备进入运行模式。
+
+#### 配置一台 Tag
+
+```text
+set F0F0 0101 0
+read
+reboot
+```
+
+Tag 和 Anchor 必须使用相同的 `PAN ID`，短地址需要不同。
+
+### 0.5 运行模式当前功能
+
+运行模式会从 Flash 加载配置；如果 Flash 配置无效，会回退到默认配置。
+
+当前运行链路包括：
+
+- UWB：
+  - 从配置加载 `PAN ID`、`short_addr`、`role`、`frame_ctrl`。
+  - 初始化 DW1000。
+  - Tag 周期性发送 discovery request 和 TWR start。
+  - Anchor 响应 discovery request 和 TWR start。
+  - Tag 侧计算 UWB 距离，并把结果投递到 `DataService`。
+- GNSS：
+  - 使用 `USART3 + DMA + IDLE` 接收数据。
+  - 解析 `0xAA 0x44 0xB5` 帧。
+  - 当前重点处理消息 `0x0846`。
+  - 提取 UTC 时间并更新 `TimeService`。
+  - 将 GNSS 解算结果投递到 `DataService`。
+- IMU：
+  - 由 IMU 外部中断触发采样。
+  - 读取三轴加速度和三轴陀螺仪原始值。
+  - 将 IMU 数据投递到 `DataService`。
+- 数据整理与落盘：
+  - `dataSort` 从 `DataService` 接收数据。
+  - 每 10 条数据做一次按本地时间戳的简单排序。
+  - 转成 ASCII 行写入 SD 双块缓冲。
+  - `sdWriter` 挂载 SD 卡并创建新日志文件。
+  - 文件名格式为 `uwb-gnss-imu-sampling-N.log`，`N` 从 1 到 9999 自动递增。
+
+### 0.6 当前日志行格式
+
+GNSS：
+
+```text
+GNSS,week,week_ms,local_sec,local_ms,utc_valid,lat,lon,hgt,lat_std,lon_std,hgt_std,pos_status,pos_type,svs_tracked,svs_in_sol
+```
+
+IMU：
+
+```text
+IMU,week,week_ms,local_sec,local_ms,utc_valid,accel_x,accel_y,accel_z,gyro_x,gyro_y,gyro_z
+```
+
+UWB：
+
+```text
+UWB,week,week_ms,local_sec,local_ms,utc_valid,anchor_id,tag_id,exchange_seq,response_slot_id,status_flags,distance_m,range_quality,retry_count,tag_tx_ts,anchor_rx_ts,anchor_tx_ts,tag_rx_ts
+```
+
+### 0.7 按键和 LED 行为
+
+- 配置模式下，LED 会每 200 ms 轮流点亮。
+- 运行模式下，`LED3` 每 500 ms 翻转一次。
+- 配置模式下短按 `USER_KEY` 会通过日志打印当前配置。
+- 长按 `USER_KEY` 超过约 200 ms 会触发系统复位。
+
+### 0.8 当前限制
+
+- 串口配置命令还不能修改 UWB 物理层参数、`frame_ctrl` 和 `log_level`。
+- DW1000 当前使用固定硬件配置：channel 2、PRF 64M、preamble 1024、data rate 110K。
+- 配置命令没有做完整的输入范围校验，测试时请使用合法参数。
+- SD 缓冲只有在 16 KiB 块写满后才通知写盘；如果数据量很少，短时间测试可能看不到新数据立即落盘。
+
+---
+
 ## 1. 项目概述
 
 这是一个基于 `STM32H743VITX` 的嵌入式数据采集工程，当前目标是把以下多源传感器数据统一采集并写入 `SD` 卡：
