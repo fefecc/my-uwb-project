@@ -1,12 +1,20 @@
+/**
+ * @file uwb_phy.h
+ * @brief PHY 层 - DW1000 硬件直接管理 (V3 重构)
+ *
+ * 状态机: IDLE / TX / RX_SLOT × PREPARE / WAIT / FINISH
+ * LISTEN 不是状态机的一部分，是 enter_listening() 函数调用。
+ *
+ * 快速应答: IRQ 中判帧类型 → 填 tx_buf/tx_time → 跳 TX/PREPARE
+ */
+
 #ifndef APP_UWB_UWB_PHY_H_
 #define APP_UWB_UWB_PHY_H_
 
 #include <stdbool.h>
 #include <stdint.h>
-
 #include "cmsis_os2.h"
 #include "FreeRTOS.h"
-#include "queue.h"
 #include "task.h"
 #include "uwb_stack_types.h"
 
@@ -14,78 +22,62 @@
 extern "C" {
 #endif
 
-typedef enum {
-    UWB_PHY_EVT_NONE = 0,
-    UWB_PHY_EVT_RX_OK,
-    UWB_PHY_EVT_TX_DONE,
-    UWB_PHY_EVT_RX_TIMEOUT,
-    UWB_PHY_EVT_RX_ERROR,
-    UWB_PHY_EVT_TX_ERROR,
-} UwbPhyEventType;
+/* ================================================================
+ *  超时参数
+ * ================================================================ */
+
+#define UWB_PHY_WATCHDOG_MS            200U    /* 主循环等 IRQ 最大时间 */
+#define UWB_PHY_RX_SLOT_TIMEOUT_US     65000U  /* 65ms, 每个 RX slot 超时 (uint16 最大 ~65ms) */
+#define UWB_PHY_TX_DELAYED_MIN_US      500U    /* 延时发送最小提前量 */
+#define UWB_PHY_HW_ERROR_THRESHOLD     5U      /* 连续硬件错误上限 */
+
+/* ================================================================
+ *  状态机枚举
+ * ================================================================ */
 
 typedef enum {
-    UWB_PHY_CMD_NONE = 0,
-    UWB_PHY_CMD_RX_ENABLE,
-    UWB_PHY_CMD_TX_NOW,
-    UWB_PHY_CMD_TX_DELAYED,
-} UwbPhyCommandType;
+    UWB_PHY_ST_IDLE = 0,
+    UWB_PHY_ST_TX,
+    UWB_PHY_ST_RX_SLOT,
+} uwb_phy_state_t;
 
 typedef enum {
-    UWB_SLOT_OWNER_FREE = 0,
-    UWB_SLOT_OWNER_PHY,
-    UWB_SLOT_OWNER_LINK,
-} UwbSlotOwner;
+    UWB_PHY_STEP_PREPARE = 0,
+    UWB_PHY_STEP_WAIT,
+    UWB_PHY_STEP_FINISH,
+} uwb_phy_step_t;
 
-typedef enum {
-    UWB_SLOT_EMPTY = 0,
-    UWB_SLOT_WRITING,
-    UWB_SLOT_READY,
-} UwbSlotState;
+/* ================================================================
+ *  API
+ * ================================================================ */
 
-typedef struct {
-    UwbPhyCommandType cmd_type;
-    uint64_t tx_delay_time;
-    uint16_t rx_timeout_uus;
-    uint16_t rx_slot_interval;
-    uint16_t rx_slot_width;
-    uint16_t rx_slot_count;
-    uint16_t rx_slot_base_id;
-    uint8_t tx_buf[UWB_STACK_MAX_FRAME_LEN];
-    uint16_t tx_len;
-} UwbPhyCommand;
+/** 初始化 PHY 上下文, 不启动线程 */
+bool UwbPhy_Init(uint16_t pan_id, uint16_t short_addr);
 
-typedef struct {
-    uint8_t slot_id;
-    uint32_t generation;
-    UwbSlotOwner owner;
-    UwbSlotState state;
-    bool valid;
-    uint16_t rx_len;
-    uint8_t rx_data[UWB_STACK_MAX_FRAME_LEN];
-    uint64_t rx_ts;
-    uint64_t tx_ts;
-    TimeLocalClock irq_local_time;
-    UwbRxQuality quality;
-    uint32_t error_flags;
-} UwbPhySlot;
+/** 初始化 PHY (含角色和协议栈配置, 用于 Anchor 快速应答) */
+bool UwbPhy_InitWithConfig(uint16_t pan_id, uint16_t short_addr,
+                           AppDeviceRole role,
+                           const UwbStackConfig *stack_cfg);
 
-typedef struct {
-    UwbPhyEventType event_type;
-    uint8_t slot_id;
-    uint32_t generation;
-    uint32_t status;
-    uint64_t dw_ts;
-    TimeLocalClock timestamp;
-} UwbPhyEvent;
-
-bool UwbPhy_Init(void);
+/** 启动 PHY 线程 */
 bool UwbPhy_StartThread(const osThreadAttr_t *attr);
-bool UwbPhy_PostCommand(const UwbPhyCommand *cmd, TickType_t timeout);
-QueueHandle_t UwbPhy_EventQueue(void);
-UwbPhySlot *UwbPhy_GetSlot(uint8_t slot_id, uint32_t generation);
-void UwbPhy_ReleaseSlot(uint8_t slot_id, uint32_t generation);
+
+/** IRQ → 通知 PHY 线程 */
 void UwbPhy_NotifyIrqFromISR(void);
+
+/** LINK → PHY: 通知有命令待处理 */
+void UwbPhy_NotifyCmd(void);
+
+/** PHY 线程入口 */
 void UwbPhy_Task(void *argument);
+
+/* ================================================================
+ *  工具函数 (PHY 内部 + 其他层可调用)
+ * ================================================================ */
+
+uint64_t UwbPhy_UsToDwTime(uint32_t us);
+uint64_t UwbPhy_ReadRxTimestamp(void);
+uint64_t UwbPhy_ReadTxTimestamp(void);
 
 #ifdef __cplusplus
 }

@@ -4,9 +4,11 @@
 
 #include "cmsis_os2.h"
 #include "uwb_app.h"
+#include "uwb_buffers.h"
 #include "uwb_device.h"
 #include "uwb_link.h"
 #include "uwb_phy.h"
+#include "uwb_slots.h"
 #include "../service/config_service.h"
 #include "../service/log_service.h"
 
@@ -48,7 +50,13 @@ bool UwbStack_StartFromConfig(void)
         return false;
     }
 
-    if (!UwbPhy_Init() || !UwbLink_Init(&cfg) || !UwbApp_Init(&cfg)) {
+    /* 初始化共享资源: 队列 + slot 池 (必须在各层 Init 之前) */
+    UwbBuffers_Init();
+    UwbSlots_Init();
+
+    if (!UwbPhy_InitWithConfig(cfg.pan_id, cfg.short_addr,
+                               cfg.role, &cfg) ||
+        !UwbLink_Init(&cfg) || !UwbApp_Init(&cfg)) {
         app_log_error("UWB stack init failed");
         return false;
     }

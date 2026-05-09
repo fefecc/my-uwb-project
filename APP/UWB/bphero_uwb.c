@@ -79,6 +79,9 @@ void BPhero_UWB_InitWithProfile(const dwt_config_t *user_cfg, uint16_t pan_id, u
 
     // dwt_enableframefilter(DWT_FF_DATA_EN);
 
-    uint32_t interrupt_mask = DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | DWT_INT_RFCE; // enable interrupt
+    /* 使能完整中断掩码: TX完成 + RX好帧 + RX超时 + 所有RX错误类型 */
+    uint32_t interrupt_mask = DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO |
+                              DWT_INT_RFCE | DWT_INT_RPHE | DWT_INT_RFSL |
+                              DWT_INT_RXOVRR | DWT_INT_SFDT | DWT_INT_ARFE;
     dwt_setinterrupt(interrupt_mask, 1);
 }

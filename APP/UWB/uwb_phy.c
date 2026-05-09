@@ -1,66 +1,95 @@
+/**
+ * @file uwb_phy.c
+ * @brief PHY 层 V3 重构 - 步进式状态机 + 零拷贝 + 快速应答
+ *
+ * 状态机: IDLE/TX/RX_SLOT × PREPARE/WAIT/FINISH
+ * LISTEN 是函数调用，不是状态。
+ */
+
 #include "uwb_phy.h"
-
 #include <string.h>
+#include <stdbool.h>
 
-#include "cmsis_os2.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include "deca_device_api.h"
 #include "deca_regs.h"
+#include "uwb_buffers.h"
+#include "uwb_slots.h"
+#include "uwb_protocol.h"
+#include "uwb_timestamp.h"
 #include "../service/log_service.h"
 #include "../service/time_service.h"
 
-#define UWB_PHY_CMD_QUEUE_LENGTH  (4U)
-#define UWB_PHY_EVT_QUEUE_LENGTH  (8U)
-#define UWB_PHY_NOTIFY_IRQ        (1UL << 0)
-#define UWB_PHY_NOTIFY_CMD        (1UL << 1)
-#define UWB_PHY_STATUS_CLEAR_MASK (SYS_STATUS_ALL_TX | SYS_STATUS_ALL_RX_GOOD | SYS_STATUS_ALL_RX_ERR | SYS_STATUS_RXRFTO)
+/* ---- 状态/中断 清除掩码 ---- */
+#define PHY_STATUS_CLEAR_MASK \
+    (SYS_STATUS_ALL_TX | SYS_STATUS_ALL_RX_GOOD | \
+     SYS_STATUS_ALL_RX_ERR | SYS_STATUS_RXOVRR | \
+     SYS_STATUS_HPDWARN | SYS_STATUS_TXBERR)
 
-static StaticQueue_t g_phy_cmd_queue_ctrl;
-static uint8_t g_phy_cmd_queue_storage[UWB_PHY_CMD_QUEUE_LENGTH * sizeof(UwbPhyCommand)];
-static QueueHandle_t g_phy_cmd_queue;
+#define PHY_INT_MASK \
+    (DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | \
+     DWT_INT_RFCE | DWT_INT_RPHE | DWT_INT_RFSL | \
+     DWT_INT_RXOVRR | DWT_INT_RXPTO | DWT_INT_SFDT | DWT_INT_ARFE)
 
-static StaticQueue_t g_phy_evt_queue_ctrl;
-static uint8_t g_phy_evt_queue_storage[UWB_PHY_EVT_QUEUE_LENGTH * sizeof(UwbPhyEvent)];
-static QueueHandle_t g_phy_evt_queue;
+/* ---- 快速应答参数 ---- */
+#define PHY_DISC_REPLY_RX_AFTER   false   /* ACK 发完后不等 RX */
 
-static UwbPhySlot g_phy_slots[UWB_STACK_PHY_SLOT_COUNT];
+/* ---- 通知位 ---- */
+#define PHY_NOTIFY_IRQ  (1UL << 0)
+#define PHY_NOTIFY_CMD  (1UL << 1)
+
+/* ---- 上下文 ---- */
+typedef struct {
+    uint16_t pan_id;
+    uint16_t short_addr;
+    AppDeviceRole role;
+
+    uwb_phy_state_t state;
+    uwb_phy_step_t  step;
+
+    /* TX 参数 (由 CMD 或快速应答填充) */
+    int8_t   tx_slot;
+    uint64_t tx_time;        /* 0 = 立即 */
+    bool     pending_rx;
+    uint16_t pending_rx_timeout_us;
+    uint8_t  pending_rx_count;
+
+    /* 快速应答内部 TX 缓冲 (不占 slot) */
+    uint8_t  tx_buf[UWB_STACK_MAX_FRAME_LEN];
+    uint16_t tx_buf_len;
+    bool     fast_reply_active;
+
+    /* RX slot 状态 */
+    int8_t   rx_slot;
+    uint8_t  rx_done_count;
+    uint8_t  rx_total_count;
+    bool     rx_got_frame;
+
+    /* 窗口号 */
+    uint16_t window_id;
+
+    /* 错误计数 */
+    uint32_t hw_error_count;
+    uint32_t rx_err_cnt;     /* 连续 RX 错误计数, 成功后清零 */
+
+    /* 帧协议配置 (Anchor 快速应答用) */
+    UwbStackConfig stack_cfg;
+} phy_context_t;
+
+static phy_context_t g_phy;
 static TaskHandle_t g_phy_task;
 
-static bool read_local_clock(TimeLocalClock *out)
+/* ================================================================
+ *  DW1000 工具函数
+ * ================================================================ */
+
+uint64_t UwbPhy_UsToDwTime(uint32_t us)
 {
-    if (!TimeService_GetLocalClock(out)) {
-        memset(out, 0, sizeof(*out));
-        return false;
-    }
-    return true;
+    return (uint64_t)us * 499200ULL * 128ULL / 1000000ULL;
 }
 
-static void post_event(const UwbPhyEvent *event)
-{
-    if (g_phy_evt_queue == NULL || event == NULL) {
-        return;
-    }
-
-    if (xQueueSend(g_phy_evt_queue, event, 0) != pdPASS) {
-        app_log_warn("UWB phy event queue full: evt=%u", (unsigned)event->event_type);
-    }
-}
-
-static UwbPhySlot *alloc_phy_slot(void)
-{
-    for (uint32_t i = 0; i < UWB_STACK_PHY_SLOT_COUNT; ++i) {
-        if (g_phy_slots[i].owner == UWB_SLOT_OWNER_FREE &&
-            g_phy_slots[i].state == UWB_SLOT_EMPTY) {
-            g_phy_slots[i].owner   = UWB_SLOT_OWNER_PHY;
-            g_phy_slots[i].state   = UWB_SLOT_WRITING;
-            g_phy_slots[i].slot_id = (uint8_t)i;
-            return &g_phy_slots[i];
-        }
-    }
-
-    return NULL;
-}
-
-static uint64_t read_rx_timestamp(void)
+uint64_t UwbPhy_ReadRxTimestamp(void)
 {
     uwb_timestamp_t ts;
     memset(&ts, 0, sizeof(ts));
@@ -68,7 +97,7 @@ static uint64_t read_rx_timestamp(void)
     return uwb_timestamp_to_u64(&ts);
 }
 
-static uint64_t read_tx_timestamp(void)
+uint64_t UwbPhy_ReadTxTimestamp(void)
 {
     uwb_timestamp_t ts;
     memset(&ts, 0, sizeof(ts));
@@ -76,264 +105,492 @@ static uint64_t read_tx_timestamp(void)
     return uwb_timestamp_to_u64(&ts);
 }
 
-static void handle_rx_ok(uint32_t status, const TimeLocalClock *local_now)
+/* ================================================================
+ *  进入监听 (不是状态机的一部分)
+ * ================================================================ */
+
+static void enter_listening(void)
 {
-    UwbPhySlot *slot = alloc_phy_slot();
-    if (slot == NULL) {
-        app_log_error("UWB phy slot overflow");
+    dwt_forcetrxoff();
+    dwt_setrxtimeout(0);  /* 0 = 无超时, 持续监听 */
+    dwt_rxenable(0);
+    g_phy.state = UWB_PHY_ST_IDLE;
+    g_phy.step  = UWB_PHY_STEP_PREPARE;
+}
+
+/* ================================================================
+ *  IRQ 处理
+ * ================================================================ */
+
+/**
+ * @brief 构建 DISC_ACK 快速应答帧到内部 tx_buf
+ * @return 帧长度, 0=失败
+ */
+static uint16_t build_fast_reply_ack(uint16_t dst_short, uint8_t seq)
+{
+    UwbProtocolFrame frame;
+    UwbProtocol_InitFrame(&frame,
+                          &g_phy.stack_cfg,
+                          dst_short,
+                          seq,
+                          UWB_FUNC_DISCOVERY_RESP);
+    frame.common.ext_header_len = 0;
+    frame.common.payload_len    = 0;
+
+    size_t tx_len = 0;
+    if (!UwbProtocol_Encode(&frame, g_phy.tx_buf,
+                            sizeof(g_phy.tx_buf), &tx_len)) {
+        return 0;
+    }
+    return (uint16_t)tx_len;
+}
+
+static void irq_rx_ok(uint32_t status)
+{
+    /* 成功收帧, 清除连续错误计数 */
+    g_phy.rx_err_cnt = 0;
+
+    /* 分配 slot 存收到的帧 */
+    int8_t idx = UwbSlots_Alloc(UWB_SLOT_PHY_OWN);
+    if (idx < 0) {
+        app_log_warn("[PHY] RX_OK no slot");
+        enter_listening();
         return;
     }
 
+    uwb_slot_t *s = UwbSlots_Get(idx);
+
+    /* 读帧数据到 slot (唯一必要拷贝: DW1000 SPI → slot) */
     uint32_t frame_info = dwt_read32bitreg(RX_FINFO_ID);
     uint16_t frame_len  = (uint16_t)(frame_info & RX_FINFO_RXFL_MASK_1023);
-    if (frame_len > UWB_STACK_MAX_FRAME_LEN) {
-        frame_len = UWB_STACK_MAX_FRAME_LEN;
+    if (frame_len > UWB_SLOT_DATA_SIZE) frame_len = UWB_SLOT_DATA_SIZE;
+
+    dwt_readrxdata(s->data, frame_len, 0);
+    s->data_len  = frame_len;
+    s->rx_ts     = UwbPhy_ReadRxTimestamp();
+    s->window_id = g_phy.window_id;
+
+    /* RX 质量 */
+    memset(&s->quality, 0, sizeof(s->quality));
+    s->quality.rx_pacc = (uint16_t)((frame_info & RX_FINFO_RXPACC_MASK) >> RX_FINFO_RXPACC_SHIFT);
+
+    /* 解析帧头用于地址过滤和快速应答 */
+    UwbProtocolFrame frame;
+    if (!UwbProtocol_Decode(&frame, s->data, s->data_len)) {
+        UwbSlots_Free(idx);
+        enter_listening();
+        return;
     }
 
-    memset(slot->rx_data, 0, sizeof(slot->rx_data));
-    dwt_readrxdata(slot->rx_data, frame_len, 0);
+    s->frame_type = frame.common.func_code;
+    s->src_short  = frame.mac.src16;
 
-    slot->rx_len         = frame_len;
-    slot->rx_ts          = read_rx_timestamp();
-    slot->tx_ts          = 0;
-    slot->irq_local_time = *local_now;
-    memset(&slot->quality, 0, sizeof(slot->quality));
-    slot->quality.rx_pacc        = (uint16_t)((frame_info & RX_FINFO_RXPACC_MASK) >> RX_FINFO_RXPACC_SHIFT);
-    slot->quality.rx_error_flags = 0;
-    slot->error_flags            = 0;
-    slot->valid                  = true;
-    slot->generation++;
-    slot->owner = UWB_SLOT_OWNER_LINK;
-    slot->state = UWB_SLOT_READY;
+    /* 地址过滤 */
+    if (frame.mac.pan_id != g_phy.pan_id ||
+        (frame.mac.dst16 != g_phy.short_addr &&
+         frame.mac.dst16 != UWB_STACK_BROADCAST_SHORT_ID)) {
+        UwbSlots_Free(idx);
+        enter_listening();
+        return;
+    }
 
-    UwbPhyEvent event = {
-        .event_type = UWB_PHY_EVT_RX_OK,
-        .slot_id    = slot->slot_id,
-        .generation = slot->generation,
-        .status     = status,
-        .dw_ts      = slot->rx_ts,
-        .timestamp  = *local_now,
-    };
-    post_event(&event);
+    /* 记录 rx_slot */
+    g_phy.rx_slot      = idx;
+    g_phy.rx_got_frame = true;
+
+    /* ---- Anchor 快速应答: 收到 DISC_REQ 时立即延时发送 ACK ---- */
+    if (g_phy.role == APP_ROLE_ANCHOR &&
+        frame.common.func_code == (uint8_t)UWB_FUNC_DISCOVERY_REQ) {
+
+        g_phy.tx_buf_len = build_fast_reply_ack(frame.mac.src16, frame.mac.seq);
+        if (g_phy.tx_buf_len > 0) {
+            /* 立即发送 ACK (延迟发送在此硬件上不可靠, 使用 IMM TX) */
+            dwt_writetxdata(g_phy.tx_buf_len + 2U, g_phy.tx_buf, 0);
+            dwt_writetxfctrl(g_phy.tx_buf_len + 2U, 0);
+
+            int ret = dwt_starttx(DWT_START_TX_IMMEDIATE);
+            if (ret == 0) {
+                g_phy.fast_reply_active = true;
+                app_log_info("[PHY] TX_STARTED fast_reply IMM");
+                /* 先上报 RX 事件, 然后等 TX_DONE */
+                phy_evt_t rx_evt = { .type = PHY_EVT_RX_FRAME,
+                                     .slot_index = g_phy.rx_slot };
+                UwbBuffers_SendEvt(&rx_evt, 0);
+                g_phy.rx_slot = -1;
+                g_phy.state = UWB_PHY_ST_TX;
+                g_phy.step  = UWB_PHY_STEP_WAIT;
+                g_phy.tx_slot = -1;  /* 快速应答不用 slot */
+                g_phy.pending_rx = false;
+                return;
+            }
+            app_log_warn("[PHY] TX_IMM_FAIL fast_reply");
+            g_phy.fast_reply_active = false;
+        }
+    }
+
+    /* ---- IDLE 状态下收帧: 直接上报 + re-listen ---- */
+    if (g_phy.state == UWB_PHY_ST_IDLE) {
+        phy_evt_t evt = { .type = PHY_EVT_RX_FRAME,
+                          .slot_index = g_phy.rx_slot };
+        UwbBuffers_SendEvt(&evt, 0);
+        g_phy.rx_slot = -1;
+        g_phy.rx_got_frame = false;
+        enter_listening();
+        return;
+    }
+
+    /* RX_SLOT 状态下收帧: 跳 FINISH 由状态机处理 */
+    g_phy.step = UWB_PHY_STEP_FINISH;
 }
 
-static void handle_tx_done(uint32_t status, const TimeLocalClock *local_now)
+static void irq_tx_done(void)
 {
-    UwbPhyEvent event = {
-        .event_type = UWB_PHY_EVT_TX_DONE,
-        .slot_id    = 0xFFU,
-        .generation = 0,
-        .status     = status,
-        .dw_ts      = read_tx_timestamp(),
-        .timestamp  = *local_now,
-    };
-    post_event(&event);
+    g_phy.step = UWB_PHY_STEP_FINISH;
 }
 
-static void handle_rx_error(UwbPhyEventType type, uint32_t status, const TimeLocalClock *local_now)
+static void irq_rx_timeout(void)
 {
-    UwbPhyEvent event = {
-        .event_type = type,
-        .slot_id    = 0xFFU,
-        .generation = 0,
-        .status     = status,
-        .dw_ts      = 0,
-        .timestamp  = *local_now,
-    };
-    post_event(&event);
+    g_phy.rx_got_frame = false;
+    g_phy.step = UWB_PHY_STEP_FINISH;
+}
+
+static void irq_rx_error(uint32_t status)
+{
+    g_phy.rx_err_cnt++;
+    app_log_warn("[PHY] RX_ERR st=0x%08lX cnt=%lu",
+                 (unsigned long)status,
+                 (unsigned long)g_phy.rx_err_cnt);
+    dwt_forcetrxoff();
+    dwt_rxreset();
+    g_phy.rx_got_frame = false;
+
+    /* IDLE 状态下: 直接重新监听, 不依赖状态机 */
+    if (g_phy.state == UWB_PHY_ST_IDLE) {
+        enter_listening();
+        return;
+    }
+
+    /* RX_SLOT 状态下: 跳 FINISH 由状态机处理 */
+    g_phy.step = UWB_PHY_STEP_FINISH;
+}
+
+static void irq_tx_error(uint32_t status)
+{
+    app_log_warn("[PHY] TX_ERR st=0x%08lX", (unsigned long)status);
+    dwt_forcetrxoff();
+
+    /* 上报错误 */
+    phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = g_phy.tx_slot };
+    UwbBuffers_SendEvt(&evt, 0);
+
+    if (g_phy.tx_slot >= 0) {
+        g_phy.tx_slot = -1;
+    }
+    enter_listening();
 }
 
 static void handle_irq(void)
 {
-    uint32_t status = dwt_read32bitreg(SYS_STATUS_ID);
-    TimeLocalClock local_now;
-    (void)read_local_clock(&local_now);
+    uint32_t st = dwt_read32bitreg(SYS_STATUS_ID);
+    uint32_t cl = st & PHY_STATUS_CLEAR_MASK;
+    if (cl) dwt_write32bitreg(SYS_STATUS_ID, cl);
+    if (st == 0) return;
 
-    if ((status & SYS_STATUS_RXFCG) != 0U) {
-        handle_rx_ok(status, &local_now);
+    /* 优先级: RX_OK > TX_DONE > RX_TIMEOUT > RX_ERROR > TX_ERROR */
+    if (st & SYS_STATUS_RXFCG) {
+        irq_rx_ok(st);
+    } else if (st & SYS_STATUS_TXFRS) {
+        irq_tx_done();
+    } else if (st & SYS_STATUS_RXRFTO) {
+        irq_rx_timeout();
+    } else if (st & SYS_STATUS_ALL_RX_ERR) {
+        irq_rx_error(st);
+    } else if (st & SYS_STATUS_TXBERR) {
+        irq_tx_error(st);
     }
-
-    if ((status & SYS_STATUS_TXFRS) != 0U) {
-        handle_tx_done(status, &local_now);
-    }
-
-    if ((status & SYS_STATUS_RXRFTO) != 0U) {
-        handle_rx_error(UWB_PHY_EVT_RX_TIMEOUT, status, &local_now);
-    } else if ((status & SYS_STATUS_ALL_RX_ERR) != 0U) {
-        handle_rx_error(UWB_PHY_EVT_RX_ERROR, status, &local_now);
-        dwt_rxreset();
-    }
-
-    if ((status & SYS_STATUS_TXERR) != 0U) {
-        handle_rx_error(UWB_PHY_EVT_TX_ERROR, status, &local_now);
-    }
-
-    dwt_write32bitreg(SYS_STATUS_ID, status & UWB_PHY_STATUS_CLEAR_MASK);
 }
 
-static void execute_command(const UwbPhyCommand *cmd)
-{
-    if (cmd == NULL) {
-        return;
-    }
+/* ================================================================
+ *  CMD 处理
+ * ================================================================ */
 
-    switch (cmd->cmd_type) {
-        case UWB_PHY_CMD_RX_ENABLE:
-            dwt_setrxtimeout(cmd->rx_timeout_uus);
+static void process_cmd(void)
+{
+    phy_cmd_t cmd;
+    while (UwbBuffers_RecvCmd(&cmd, 0)) {
+        switch (cmd.type) {
+            case PHY_CMD_TX_FRAME:
+                app_log_info("[PHY] CMD_TX slot=%d win=%u",
+                             (int)cmd.slot_index, g_phy.window_id);
+                dwt_forcetrxoff();  /* 停止正在进行的 RX */
+                g_phy.tx_slot = cmd.slot_index;
+                g_phy.tx_time = cmd.tx_time;
+                g_phy.pending_rx = cmd.has_pending_rx;
+                g_phy.pending_rx_timeout_us = cmd.rx_timeout_us;
+                g_phy.pending_rx_count = cmd.rx_slot_count;
+                g_phy.fast_reply_active = false;
+                g_phy.state = UWB_PHY_ST_TX;
+                g_phy.step  = UWB_PHY_STEP_PREPARE;
+                break;
+
+            case PHY_CMD_RESET:
+                app_log_info("[PHY] CMD_RESET");
+                dwt_forcetrxoff();
+                enter_listening();
+                break;
+
+            case PHY_CMD_ENTER_LISTEN:
+                enter_listening();
+                break;
+        }
+    }
+}
+
+/* ================================================================
+ *  状态机
+ * ================================================================ */
+
+static void run_state_machine(void)
+{
+    switch (g_phy.state) {
+
+    /* ---- TX ---- */
+    case UWB_PHY_ST_TX:
+        switch (g_phy.step) {
+        case UWB_PHY_STEP_PREPARE: {
+            uwb_slot_t *s = UwbSlots_Get(g_phy.tx_slot);
+            if (s == NULL) {
+                app_log_warn("[PHY] TX slot NULL");
+                enter_listening();
+                break;
+            }
+
+            /* slot→SPI 拷贝 */
+            dwt_writetxdata(s->data_len + 2U, s->data, 0);
+            dwt_writetxfctrl(s->data_len + 2U, 0);
+
+            int ret;
+            if (g_phy.tx_time != 0) {
+                dwt_setdelayedtrxtime((uint32_t)(g_phy.tx_time >> 8));
+                ret = dwt_starttx(DWT_START_TX_DELAYED);
+                if (ret != 0) {
+                    app_log_warn("[PHY] TX_DELAY_FAIL");
+                    phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = g_phy.tx_slot };
+                    UwbBuffers_SendEvt(&evt, 0);
+                    g_phy.tx_slot = -1;
+                    enter_listening();
+                    break;
+                }
+            } else {
+                ret = dwt_starttx(DWT_START_TX_IMMEDIATE);
+                if (ret != 0) {
+                    app_log_warn("[PHY] TX_IMM_FAIL");
+                    phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = g_phy.tx_slot };
+                    UwbBuffers_SendEvt(&evt, 0);
+                    g_phy.tx_slot = -1;
+                    enter_listening();
+                    break;
+                }
+            }
+            app_log_info("[PHY] TX_STARTED imm=%u", g_phy.tx_time == 0 ? 1U : 0U);
+            g_phy.step = UWB_PHY_STEP_WAIT;
+            break;
+        }
+
+        case UWB_PHY_STEP_WAIT:
+            break;  /* 等 irq_tx_done → step=FINISH */
+
+        case UWB_PHY_STEP_FINISH: {
+            /* 快速应答完成: 只需读 TX 时间戳并 re-listen */
+            if (g_phy.fast_reply_active) {
+                uint64_t tx_ts = UwbPhy_ReadTxTimestamp();
+                app_log_info("[LINK] fast_reply=1 tx=0x%02lX%08lX",
+                             (uint32_t)(tx_ts >> 32),
+                             (uint32_t)(tx_ts & 0xFFFFFFFF));
+                g_phy.fast_reply_active = false;
+                g_phy.tx_slot = -1;
+                enter_listening();
+                break;
+            }
+
+            /* 填 TX 时间戳到 slot */
+            uwb_slot_t *s = UwbSlots_Get(g_phy.tx_slot);
+            if (s != NULL) {
+                s->tx_ts = UwbPhy_ReadTxTimestamp();
+            }
+
+            /* 上报 TX_DONE */
+            phy_evt_t evt = { .type = PHY_EVT_TX_DONE, .slot_index = g_phy.tx_slot };
+            UwbBuffers_SendEvt(&evt, 0);
+
+            if (g_phy.pending_rx) {
+                /* 进入 RX_SLOT 等待应答 */
+                g_phy.rx_done_count  = 0;
+                g_phy.rx_total_count = g_phy.pending_rx_count;
+                g_phy.rx_got_frame   = false;
+                g_phy.rx_slot        = -1;
+                g_phy.state = UWB_PHY_ST_RX_SLOT;
+                g_phy.step  = UWB_PHY_STEP_PREPARE;
+            } else {
+                g_phy.tx_slot = -1;
+                enter_listening();
+            }
+            break;
+        }
+        }
+        break;
+
+    /* ---- RX_SLOT ---- */
+    case UWB_PHY_ST_RX_SLOT:
+        switch (g_phy.step) {
+        case UWB_PHY_STEP_PREPARE:
+            dwt_setrxtimeout(g_phy.pending_rx_timeout_us);
             if (dwt_rxenable(0) != 0) {
-                app_log_warn("UWB RX enable failed");
-            }
-            break;
-
-        case UWB_PHY_CMD_TX_NOW:
-            if (cmd->tx_len == 0U || cmd->tx_len > UWB_STACK_MAX_FRAME_LEN) {
-                app_log_warn("UWB TX_NOW invalid len=%u", (unsigned)cmd->tx_len);
+                app_log_warn("[PHY] RX enable fail");
+                enter_listening();
                 break;
             }
-            (void)dwt_writetxdata(cmd->tx_len, (uint8_t *)cmd->tx_buf, 0);
-            (void)dwt_writetxfctrl(cmd->tx_len, 0);
-            if (dwt_starttx(DWT_START_TX_IMMEDIATE) != 0) {
-                app_log_warn("UWB TX_NOW start failed");
-            }
+            g_phy.step = UWB_PHY_STEP_WAIT;
             break;
 
-        case UWB_PHY_CMD_TX_DELAYED:
-            if (cmd->tx_len == 0U || cmd->tx_len > UWB_STACK_MAX_FRAME_LEN) {
-                app_log_warn("UWB TX_DELAYED invalid len=%u", (unsigned)cmd->tx_len);
-                break;
-            }
-            dwt_setdelayedtrxtime((uint32_t)(cmd->tx_delay_time >> 8));
-            (void)dwt_writetxdata(cmd->tx_len, (uint8_t *)cmd->tx_buf, 0);
-            (void)dwt_writetxfctrl(cmd->tx_len, 0);
-            if (dwt_starttx(DWT_START_TX_DELAYED) != 0) {
-                app_log_warn("UWB TX_DELAYED start failed");
-            }
-            break;
+        case UWB_PHY_STEP_WAIT:
+            break;  /* 等 irq_rx_ok/timeout → step=FINISH */
 
-        case UWB_PHY_CMD_NONE:
-        default:
+        case UWB_PHY_STEP_FINISH: {
+            bool got_frame_this_slot = (g_phy.rx_got_frame && g_phy.rx_slot >= 0);
+
+            if (got_frame_this_slot) {
+                /* 上报 RX 事件 */
+                phy_evt_t evt = { .type = PHY_EVT_RX_FRAME, .slot_index = g_phy.rx_slot };
+                UwbBuffers_SendEvt(&evt, 0);
+                g_phy.rx_slot = -1;
+            }
+
+            g_phy.rx_done_count++;
+            g_phy.rx_got_frame = false;
+
+            if (g_phy.rx_done_count < g_phy.rx_total_count) {
+                g_phy.step = UWB_PHY_STEP_PREPARE;  /* 下一个 slot */
+            } else {
+                /* 所有 RX slot 结束 */
+                if (!got_frame_this_slot) {
+                    /* 真正超时: 没有收到任何帧 */
+                    phy_evt_t evt = { .type = PHY_EVT_RX_TIMEOUT, .slot_index = -1 };
+                    UwbBuffers_SendEvt(&evt, 0);
+                }
+                enter_listening();
+            }
             break;
+        }
+        }
+        break;
+
+    case UWB_PHY_ST_IDLE:
+        break;
     }
 }
 
-bool UwbPhy_Init(void)
+/* ================================================================
+ *  PHY 线程
+ * ================================================================ */
+
+bool UwbPhy_InitWithConfig(uint16_t pan_id, uint16_t short_addr,
+                           AppDeviceRole role,
+                           const UwbStackConfig *stack_cfg)
 {
-    if (g_phy_cmd_queue == NULL) {
-        g_phy_cmd_queue = xQueueCreateStatic(UWB_PHY_CMD_QUEUE_LENGTH,
-                                             sizeof(UwbPhyCommand),
-                                             g_phy_cmd_queue_storage,
-                                             &g_phy_cmd_queue_ctrl);
-    }
-
-    if (g_phy_evt_queue == NULL) {
-        g_phy_evt_queue = xQueueCreateStatic(UWB_PHY_EVT_QUEUE_LENGTH,
-                                             sizeof(UwbPhyEvent),
-                                             g_phy_evt_queue_storage,
-                                             &g_phy_evt_queue_ctrl);
-    }
-
-    memset(g_phy_slots, 0, sizeof(g_phy_slots));
-
-    for (uint32_t i = 0; i < UWB_STACK_PHY_SLOT_COUNT; ++i) {
-        g_phy_slots[i].slot_id = (uint8_t)i;
-        g_phy_slots[i].owner   = UWB_SLOT_OWNER_FREE;
-        g_phy_slots[i].state   = UWB_SLOT_EMPTY;
-    }
-
-    return g_phy_cmd_queue != NULL && g_phy_evt_queue != NULL;
-}
-
-bool UwbPhy_StartThread(const osThreadAttr_t *attr)
-{
-    if (g_phy_task != NULL) {
-        return true;
-    }
-
-    g_phy_task = osThreadNew(UwbPhy_Task, NULL, attr);
-    return g_phy_task != NULL;
-}
-
-bool UwbPhy_PostCommand(const UwbPhyCommand *cmd, TickType_t timeout)
-{
-    if (g_phy_cmd_queue == NULL || cmd == NULL) {
-        return false;
-    }
-
-    if (xQueueSend(g_phy_cmd_queue, cmd, timeout) != pdPASS) {
-        return false;
-    }
-
-    if (g_phy_task != NULL) {
-        (void)xTaskNotify(g_phy_task, UWB_PHY_NOTIFY_CMD, eSetBits);
+    memset(&g_phy, 0, sizeof(g_phy));
+    g_phy.pan_id     = pan_id;
+    g_phy.short_addr = short_addr;
+    g_phy.role       = role;
+    g_phy.tx_slot    = -1;
+    g_phy.rx_slot    = -1;
+    g_phy.state      = UWB_PHY_ST_IDLE;
+    g_phy.step       = UWB_PHY_STEP_PREPARE;
+    if (stack_cfg != NULL) {
+        g_phy.stack_cfg = *stack_cfg;
     }
     return true;
 }
 
-QueueHandle_t UwbPhy_EventQueue(void)
+bool UwbPhy_Init(uint16_t pan_id, uint16_t short_addr)
 {
-    return g_phy_evt_queue;
-}
-
-UwbPhySlot *UwbPhy_GetSlot(uint8_t slot_id, uint32_t generation)
-{
-    if (slot_id >= UWB_STACK_PHY_SLOT_COUNT) {
-        return NULL;
-    }
-
-    UwbPhySlot *slot = &g_phy_slots[slot_id];
-    if (slot->owner != UWB_SLOT_OWNER_LINK ||
-        slot->state != UWB_SLOT_READY ||
-        slot->generation != generation ||
-        !slot->valid) {
-        return NULL;
-    }
-
-    return slot;
-}
-
-void UwbPhy_ReleaseSlot(uint8_t slot_id, uint32_t generation)
-{
-    if (slot_id >= UWB_STACK_PHY_SLOT_COUNT) {
-        return;
-    }
-
-    UwbPhySlot *slot = &g_phy_slots[slot_id];
-    if (slot->generation != generation) {
-        return;
-    }
-
-    slot->owner  = UWB_SLOT_OWNER_FREE;
-    slot->state  = UWB_SLOT_EMPTY;
-    slot->valid  = false;
-    slot->rx_len = 0;
+    return UwbPhy_InitWithConfig(pan_id, short_addr, APP_ROLE_TAG, NULL);
 }
 
 void UwbPhy_NotifyIrqFromISR(void)
 {
-    if (g_phy_task == NULL) {
-        return;
-    }
-
+    if (g_phy_task == NULL) return;
     BaseType_t higher = pdFALSE;
-    xTaskNotifyFromISR(g_phy_task, UWB_PHY_NOTIFY_IRQ, eSetBits, &higher);
+    xTaskNotifyFromISR(g_phy_task, PHY_NOTIFY_IRQ, eSetBits, &higher);
     portYIELD_FROM_ISR(higher);
+}
+
+void UwbPhy_NotifyCmd(void)
+{
+    if (g_phy_task == NULL) return;
+    (void)xTaskNotify(g_phy_task, PHY_NOTIFY_CMD, eSetBits);
+}
+
+bool UwbPhy_StartThread(const osThreadAttr_t *attr)
+{
+    if (g_phy_task != NULL) return true;
+    g_phy_task = osThreadNew(UwbPhy_Task, NULL, attr);
+    return g_phy_task != NULL;
 }
 
 void UwbPhy_Task(void *argument)
 {
     (void)argument;
 
+    g_phy_task = xTaskGetCurrentTaskHandle();
+    app_log_info("[PHY] START short=0x%04X role=%u",
+                 g_phy.short_addr, (unsigned)g_phy.role);
+
+    enter_listening();
+
     for (;;) {
         uint32_t notify = 0;
-        (void)xTaskNotifyWait(0U, UINT32_MAX, &notify, portMAX_DELAY);
 
-        if ((notify & UWB_PHY_NOTIFY_IRQ) != 0U) {
+        /* 如果状态机有待执行的 PREPARE，不阻塞，立即执行 */
+        TickType_t wait_ticks =
+            (g_phy.state != UWB_PHY_ST_IDLE && g_phy.step == UWB_PHY_STEP_PREPARE)
+            ? 0
+            : pdMS_TO_TICKS(UWB_PHY_WATCHDOG_MS);
+
+        BaseType_t got = xTaskNotifyWait(
+            0, UINT32_MAX, &notify, wait_ticks);
+
+        /* ---- 看门狗：等 IRQ 超时 ---- */
+        if (got != pdPASS && wait_ticks > 0 && g_phy.state != UWB_PHY_ST_IDLE) {
+            app_log_warn("[PHY] WATCHDOG state=%u step=%u",
+                         (unsigned)g_phy.state, (unsigned)g_phy.step);
+            g_phy.hw_error_count++;
+            dwt_forcetrxoff();
+            /* 释放占用的 slot */
+            if (g_phy.tx_slot >= 0) {
+                phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = g_phy.tx_slot };
+                UwbBuffers_SendEvt(&evt, 0);
+                g_phy.tx_slot = -1;
+            }
+            if (g_phy.rx_slot >= 0) {
+                UwbSlots_Free(g_phy.rx_slot);
+                g_phy.rx_slot = -1;
+            }
+            enter_listening();
+            continue;
+        }
+
+        /* ---- IRQ ---- */
+        if (notify & PHY_NOTIFY_IRQ) {
             handle_irq();
         }
 
-        UwbPhyCommand cmd;
-        while (xQueueReceive(g_phy_cmd_queue, &cmd, 0) == pdPASS) {
-            execute_command(&cmd);
+        /* ---- CMD ---- */
+        if (notify & PHY_NOTIFY_CMD) {
+            process_cmd();
         }
+
+        /* ---- 状态机步进 ---- */
+        run_state_machine();
     }
 }

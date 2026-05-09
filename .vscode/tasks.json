@@ -35,6 +35,45 @@
             "command": "${command:eide.project.clean}",
             "group": "build",
             "problemMatcher": []
+        },
+        {
+            "label": "Flash Tag (JLink)",
+            "type": "process",
+            "command": "${env:USERPROFILE}/.eide/tools/jlink/JLink.exe",
+            "args": [
+                "-device", "STM32H743VI",
+                "-if", "SWD",
+                "-speed", "8000",
+                "-autoconnect", "1",
+                "-CommandFile", "${workspaceFolder}/scripts/jlink_flash.jlink"
+            ],
+            "group": "build",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
+        },
+        {
+            "label": "Flash Anchor (ST-Link)",
+            "type": "process",
+            "command": "${env:USERPROFILE}/.eide/tools/openocd_7a1adfbec_mingw32/bin/openocd.exe",
+            "args": [
+                "-s", "${workspaceFolder}",
+                "-f", "interface/stlink-v2.cfg",
+                "-f", "target/stm32h7x.cfg",
+                "-c", "program \"${workspaceFolder}/build/Debug/UWB.hex\" verify",
+                "-c", "reset run",
+                "-c", "exit"
+            ],
+            "group": "build",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": true
+            }
         }
     ]
 }

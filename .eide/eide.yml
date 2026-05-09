@@ -88,18 +88,18 @@ targets:
         useCustomScatterFile: true
     uploadConfigMap:
       JLink:
-        baseAddr: ""
+        baseAddr: "0x08000000"
         bin: ""
         cpuInfo:
-          cpuName: "null"
-          vendor: "null"
+          cpuName: STM32H743VI
+          vendor: ST
         otherCmds: ""
         proType: 1
         speed: 8000
       OpenOCD:
         baseAddr: "0x08000000"
         bin: ""
-        interface: stlink-v2
+        interface: stlink
         target: stm32h7x
     uploader: OpenOCD
   Release:

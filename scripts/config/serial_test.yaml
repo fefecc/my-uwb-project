@@ -1,0 +1,5 @@
+# UWB 时隙分析配置
+serial:
+  tag: "COM6"
+  anchor: "COM7"
+  baudrate: 460800

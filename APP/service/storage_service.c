@@ -88,10 +88,11 @@ bool StorageService_WriteNodeAscii(FIL *file, const AppDataNode *node)
     switch (node->source) {
         case APP_DATA_SRC_GNSS:
             n = snprintf(line, sizeof(line),
-                         "GNSS,%lu,%lu,%llu,%.3f,%u,%.9f,%.9f,%.4f,%.4f,%.4f,%.4f,%lu,%lu,%u,%u\r\n",
+                         "GNSS,%lu,%lu,0x%02lX%08lX,%.3f,%u,%.9f,%.9f,%.4f,%.4f,%.4f,%.4f,%lu,%lu,%u,%u\r\n",
                          (unsigned long)week,
                          (unsigned long)week_ms,
-                         (unsigned long long)ts->local_clock.sec,
+                         (uint32_t)(ts->local_clock.sec >> 32),
+                         (uint32_t)(ts->local_clock.sec & 0xFFFFFFFF),
                          (double)ts->local_clock.ms,
                          ts->utc_valid ? 1U : 0U,
                          node->payload.gnss.lat,
@@ -108,10 +109,11 @@ bool StorageService_WriteNodeAscii(FIL *file, const AppDataNode *node)
 
         case APP_DATA_SRC_IMU:
             n = snprintf(line, sizeof(line),
-                         "IMU,%lu,%lu,%llu,%.3f,%u,%d,%d,%d,%d,%d,%d\r\n",
+                         "IMU,%lu,%lu,0x%02lX%08lX,%.3f,%u,%d,%d,%d,%d,%d,%d\r\n",
                          (unsigned long)week,
                          (unsigned long)week_ms,
-                         (unsigned long long)ts->local_clock.sec,
+                         (uint32_t)(ts->local_clock.sec >> 32),
+                         (uint32_t)(ts->local_clock.sec & 0xFFFFFFFF),
                          (double)ts->local_clock.ms,
                          ts->utc_valid ? 1U : 0U,
                          node->payload.imu.accel[0],

@@ -36,6 +36,22 @@
 #define APP_SD_BLOCK_SIZE            (16U * 1024U)
 #define APP_ASCII_LINE_SIZE          (384U)
 #define APP_KEY_LONG_PRESS_MS        (200U)
+#define APP_SUPPRESS_SD_WRITE_ERROR_LOGS (1U)
+
+#if APP_SUPPRESS_SD_WRITE_ERROR_LOGS
+static void app_log_sd_error(const char *fmt, ...)
+{
+    (void)fmt;
+}
+
+static void app_log_sd_warn(const char *fmt, ...)
+{
+    (void)fmt;
+}
+#else
+#define app_log_sd_error(...) app_log_error(__VA_ARGS__)
+#define app_log_sd_warn(...)  app_log_warn(__VA_ARGS__)
+#endif
 
 #define GNSS_MSG_ID_BESTNAV          (0x0846U)
 
@@ -432,12 +448,12 @@ static bool sd_fifo_switch_to_free(void)
 static void notify_sd_block_ready(AppSdBlockId id)
 {
     if (g_sd_writer_task == NULL) {
-        app_log_error("SD writer not ready for %s block", sd_block_name(id));
+        app_log_sd_error("SD writer not ready for %s block", sd_block_name(id));
         return;
     }
 
     if (xTaskNotify(g_sd_writer_task, sd_ready_bit(id), eSetBits) != pdPASS) {
-        app_log_error("notify SD writer failed for %s block", sd_block_name(id));
+        app_log_sd_error("notify SD writer failed for %s block", sd_block_name(id));
     }
 }
 
@@ -453,7 +469,7 @@ static bool sd_fifo_write_ascii(const uint8_t *data, size_t len, AppDataSource s
         size_t copied         = 0;
 
         if (!sd_fifo_take()) {
-            app_log_error("SD FIFO mutex unavailable");
+            app_log_sd_error("SD FIFO mutex unavailable");
             return false;
         }
 
@@ -487,9 +503,9 @@ static bool sd_fifo_write_ascii(const uint8_t *data, size_t len, AppDataSource s
         }
 
         if (no_free) {
-            app_log_error("SD FIFO full: source=%s block=%s",
-                          data_source_name(source),
-                          has_ready ? sd_block_name(ready_id) : "none");
+            app_log_sd_error("SD FIFO full: source=%s block=%s",
+                             data_source_name(source),
+                             has_ready ? sd_block_name(ready_id) : "none");
             return false;
         }
 
@@ -639,11 +655,13 @@ static size_t format_node_ascii(const AppDataNode *node, char *line, size_t line
 
         case APP_DATA_SRC_UWB:
             n = snprintf(line, line_size,
-                         "UWB,%lu,%lu.%03lu,%lu,%.3f,%u,%u,%u,%u,%u,%u,%.17f,%d,%u,%llu,%llu,%llu,%llu\r\n",
+                         "UWB,%lu,%lu.%03lu,0x%02lX%08lX,%.3f,%u,%u,%u,%u,%u,%u,%.17f,%d,%u,"
+                         "0x%02lX%08lX,0x%02lX%08lX,0x%02lX%08lX,0x%02lX%08lX\r\n",
                          (unsigned long)week,
                          (unsigned long)week_sec,
                          (unsigned long)week_ms_rem,
-                         (unsigned long)ts->local_clock.sec,
+                         (uint32_t)(ts->local_clock.sec >> 32),
+                         (uint32_t)(ts->local_clock.sec & 0xFFFFFFFF),
                          (double)ts->local_clock.ms,
                          ts->utc_valid ? 1U : 0U,
                          node->payload.uwb.anchor_id,
@@ -654,10 +672,14 @@ static size_t format_node_ascii(const AppDataNode *node, char *line, size_t line
                          node->payload.uwb.distance_m,
                          node->payload.uwb.range_quality,
                          node->payload.uwb.retry_count,
-                         (unsigned long long)node->payload.uwb.tag_tx_ts,
-                         (unsigned long long)node->payload.uwb.anchor_rx_ts,
-                         (unsigned long long)node->payload.uwb.anchor_tx_ts,
-                         (unsigned long long)node->payload.uwb.tag_rx_ts);
+                         (uint32_t)(node->payload.uwb.tag_tx_ts >> 32),
+                         (uint32_t)(node->payload.uwb.tag_tx_ts & 0xFFFFFFFF),
+                         (uint32_t)(node->payload.uwb.anchor_rx_ts >> 32),
+                         (uint32_t)(node->payload.uwb.anchor_rx_ts & 0xFFFFFFFF),
+                         (uint32_t)(node->payload.uwb.anchor_tx_ts >> 32),
+                         (uint32_t)(node->payload.uwb.anchor_tx_ts & 0xFFFFFFFF),
+                         (uint32_t)(node->payload.uwb.tag_rx_ts >> 32),
+                         (uint32_t)(node->payload.uwb.tag_rx_ts & 0xFFFFFFFF));
             break;
 
         default:
@@ -776,8 +798,8 @@ static void write_sorted_node_to_sd(const AppDataNode *node)
     }
 
     if (!sd_fifo_write_ascii((const uint8_t *)line, len, node->source)) {
-        app_log_error("write ASCII to SD FIFO failed: source=%s",
-                      data_source_name(node->source));
+        app_log_sd_error("write ASCII to SD FIFO failed: source=%s",
+                         data_source_name(node->source));
     }
 }
 
@@ -847,8 +869,8 @@ bool AppTasks_CreateAll(AppMode mode)
         if (!UwbStack_StartFromConfig()) {
             app_log_error("UWB stack start failed");
         }
-        // (void)osThreadNew(AppGnssTask, NULL, &gnss_attr);
-        // (void)osThreadNew(AppImuTask, NULL, &imu_attr);
+        (void)osThreadNew(AppGnssTask, NULL, &gnss_attr);
+        (void)osThreadNew(AppImuTask, NULL, &imu_attr);
     }
 
     return true;
@@ -990,15 +1012,15 @@ void AppSdWriterTask(void *argument)
             const uint8_t *data = NULL;
             size_t len          = 0;
             if (!sd_fifo_lock_block((AppSdBlockId)id, &data, &len)) {
-                app_log_warn("SD %s block ready notify without data",
-                             sd_block_name((AppSdBlockId)id));
+                app_log_sd_warn("SD %s block ready notify without data",
+                                sd_block_name((AppSdBlockId)id));
                 continue;
             }
 
             if (len != APP_SD_BLOCK_SIZE ||
                 !StorageService_WriteBlock(&file, data, len)) {
-                app_log_error("SD write %s block failed",
-                              sd_block_name((AppSdBlockId)id));
+                app_log_sd_error("SD write %s block failed",
+                                 sd_block_name((AppSdBlockId)id));
                 (void)f_close(&file);
                 mounted      = false;
                 opened       = false;

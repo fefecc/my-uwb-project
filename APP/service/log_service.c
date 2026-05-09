@@ -4,7 +4,21 @@
 #include <string.h>
 
 #include "main.h"
+#include "FreeRTOS.h"
+#include "task.h"
 #include "../task/app_tasks.h"
+
+#define LOG_SERVICE_UWB_ONLY (1U)
+
+static bool is_uwb_task(void)
+{
+    if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
+        return false;
+    }
+    const char *name = pcTaskGetName(NULL);
+    return (name != NULL && strncmp(name, "uwb", 3U) == 0);
+}
+
 
 static const char *level_name(AppLogLevel level)
 {
@@ -54,6 +68,12 @@ void LogService_VWrite(AppLogLevel level, const char *fmt, va_list args)
     char line[256];
 
     (void)vsnprintf(msg, sizeof(msg), fmt, args);
+#if LOG_SERVICE_UWB_ONLY
+    if (!is_uwb_task()) {
+        return;
+    }
+#endif
+
     int n = snprintf(line, sizeof(line), "%lu %-5s %s\r\n",
                      (unsigned long)HAL_GetTick(),
                      level_name(level),

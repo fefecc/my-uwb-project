@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(arm-none-eabi-gcc -c -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard -IAPP/UWB -IAPP/common -IAPP/service -IDrivers/STM32H7xx_HAL_Driver/Inc -IDrivers/STM32H7xx_HAL_Driver/Inc/Legacy -IDrivers/CMSIS/Device/ST/STM32H7xx/Include -IDrivers/CMSIS/Include -IThrid/DecaDriver/inc -ICore/Inc -IFATFS/App -IFATFS/Target -IMiddlewares/Third_Party/FreeRTOS/Source/include -IMiddlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -IMiddlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F -DSTM32H743xx -DUSE_HAL_DRIVER -DDEBUG -Wall -Wextra APP/UWB/uwb_phy.c APP/UWB/uwb_link.c -o /dev/null)",
+      "Bash(arm-none-eabi-gcc -c -mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard -IAPP/UWB -IAPP/common -IAPP/service -IAPP/task -IAPP/Bsp -IAPP/device -IAPP/GNSS -IDrivers/STM32H7xx_HAL_Driver/Inc -IDrivers/STM32H7xx_HAL_Driver/Inc/Legacy -IDrivers/CMSIS/Device/ST/STM32H7xx/Include -IDrivers/CMSIS/Include -IThrid/decadriver -IThrid/asm330 -ICore/Inc -IFATFS/App -IFATFS/Target -IMiddlewares/Third_Party/FreeRTOS/Source/include -IMiddlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -IMiddlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM4F -DSTM32H743xx -DUSE_HAL_DRIVER -DDEBUG -Wall -Wextra APP/UWB/uwb_stack.c -o /tmp/uwb_stack.o)"
+    ]
+  }
+}
