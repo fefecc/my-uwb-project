@@ -1,10 +1,16 @@
 /**
  * @file uwb_link.c
- * @brief LINK 层 (V3 极简版) - Tag 100ms 循环发 DISC_REQ + 回收 slot
+ * @brief LINK 层 (V4 极简版) - Tag 定时发 DISC_REQ, PHY 负责回收 TX slot
  *
- * 简化版只做两件事:
- *   1. Tag: 每 100ms 发一次 DISC_REQ，等 PHY 事件，回收 slot
- *   2. Anchor: 只回收 PHY 上报的 slot (快速应答由 PHY 自动完成)
+ * 流程:
+ *   1. LINK 分配 slot, 打包 DISC_REQ 帧数据
+ *   2. 通过 cmd_queue 发送 slot_index 给 PHY
+ *   3. 阻塞等待 PHY 的 TX_DONE/ERROR 事件 (带超时保护)
+ *   4. TX slot 由 PHY 层回收, LINK 只处理事件通知
+ *   5. RX slot 仍由 LINK 回收 (需要读取帧数据做业务处理)
+ *   6. Anchor: 只回收 PHY 上报的 RX slot (快速应答由 PHY 自动完成)
+ *
+ * 对 PHY 的 RESET 能力保留但暂不使用。
  */
 
 #include "uwb_link.h"
@@ -23,9 +29,9 @@
 #include "../service/log_service.h"
 
 /* ---- 时序参数 ---- */
-#define LINK_DISC_PERIOD_MS       200U
-#define LINK_POLL_TIMEOUT_MS      50U
-#define LINK_PHY_ALIVE_MS         500U
+#define LINK_DISC_PERIOD_MS       200U   /* 发送 DISC_REQ 的周期 */
+#define LINK_TX_TIMEOUT_MS        50U    /* 等待 PHY 完成 TX 的超时 */
+#define LINK_POLL_TIMEOUT_MS      50U    /* 主循环轮询间隔 (Anchor 用) */
 
 /* ---- 上下文 ---- */
 typedef struct {
@@ -33,7 +39,6 @@ typedef struct {
     uint16_t window_id;
     uint8_t  seq;
     uint32_t last_disc_ms;
-    uint32_t last_phy_evt_ms;
 } link_context_t;
 
 static link_context_t g_link;
@@ -82,27 +87,20 @@ static uint16_t build_disc_req(uint8_t *buf, size_t buf_size)
     return (uint16_t)tx_len;
 }
 
-/* ---- 回收 PHY 事件 ---- */
+/* ---- 回收 PHY 事件 (非阻塞, 处理 RX 帧和超时等) ---- */
 static void drain_phy_events(void)
 {
     phy_evt_t evt;
     while (UwbBuffers_RecvEvt(&evt, 0)) {
-        g_link.last_phy_evt_ms = HAL_GetTick();
 
         switch (evt.type) {
-            case PHY_EVT_TX_DONE: {
-                uwb_slot_t *s = UwbSlots_Get(evt.slot_index);
-                if (s != NULL) {
-                    app_log_info("[LINK] TX_DONE win=%u tx=0x%02lX%08lX",
-                                 s->window_id,
-                                 (uint32_t)(s->tx_ts >> 32),
-                                 (uint32_t)(s->tx_ts & 0xFFFFFFFF));
-                }
-                if (evt.slot_index >= 0) UwbSlots_Free(evt.slot_index);
+            case PHY_EVT_TX_DONE:
+                /* TX slot 已由 PHY 回收, LINK 只记录日志 */
+                app_log_info("[LINK] TX_DONE (slot recycled by PHY)");
                 break;
-            }
 
             case PHY_EVT_RX_FRAME: {
+                /* RX slot 由 LINK 回收 (需要读取帧数据) */
                 uwb_slot_t *s = UwbSlots_Get(evt.slot_index);
                 if (s != NULL) {
                     app_log_info("[LINK] RX type=%u src=0x%04X rx=0x%02lX%08lX",
@@ -119,14 +117,14 @@ static void drain_phy_events(void)
                 break;
 
             case PHY_EVT_ERROR:
-                app_log_warn("[LINK] PHY_ERROR slot=%d", (int)evt.slot_index);
-                if (evt.slot_index >= 0) UwbSlots_Free(evt.slot_index);
+                /* TX slot 已由 PHY 回收, LINK 只记录日志 */
+                app_log_warn("[LINK] PHY_ERROR (slot recycled by PHY)");
                 break;
         }
     }
 }
 
-/* ---- Tag: 发送 DISC_REQ ---- */
+/* ---- Tag: 发送 DISC_REQ (内含超时等待) ---- */
 static void link_tag_send_disc(void)
 {
     uint32_t now = HAL_GetTick();
@@ -137,6 +135,7 @@ static void link_tag_send_disc(void)
 
     app_log_info("[LINK] preparing DISC_REQ tick=%lu", (unsigned long)now);
 
+    /* 1. 分配 slot, 打包帧数据 */
     int8_t idx = UwbSlots_Alloc(UWB_SLOT_LINK_OWN);
     if (idx < 0) {
         app_log_warn("[LINK] no slot for TX");
@@ -154,6 +153,7 @@ static void link_tag_send_disc(void)
         return;
     }
 
+    /* 2. 通过消息队列将 slot 位置发送给 PHY */
     phy_cmd_t cmd;
     memset(&cmd, 0, sizeof(cmd));
     cmd.type           = PHY_CMD_TX_FRAME;
@@ -170,31 +170,55 @@ static void link_tag_send_disc(void)
     }
 
     UwbPhy_NotifyCmd();
-    app_log_info("[LINK] DISC_REQ win=%u seq=%u",
-                 g_link.window_id, (unsigned)(g_link.seq - 1));
+    app_log_info("[LINK] DISC_REQ win=%u seq=%u slot=%d",
+                 g_link.window_id, (unsigned)(g_link.seq - 1), (int)idx);
+
+    /* 3. 超时等待 PHY 完成 TX (slot 已交给 PHY, 由 PHY 回收)
+     *    等到 TX_DONE/ERROR 事件, 或超时后放弃等待
+     *    超时不需要回收 slot, PHY 层的看门狗会兜底 */
+    phy_evt_t evt;
+    bool got = UwbBuffers_RecvEvt(&evt, pdMS_TO_TICKS(LINK_TX_TIMEOUT_MS));
+    if (got) {
+        /* 处理 TX 结果事件 */
+        switch (evt.type) {
+            case PHY_EVT_TX_DONE:
+                app_log_info("[LINK] TX_DONE (slot recycled by PHY)");
+                break;
+            case PHY_EVT_ERROR:
+                app_log_warn("[LINK] TX failed (slot recycled by PHY)");
+                break;
+            case PHY_EVT_RX_FRAME: {
+                /* 可能在等待期间收到 RX 帧 */
+                uwb_slot_t *rs = UwbSlots_Get(evt.slot_index);
+                if (rs != NULL) {
+                    app_log_info("[LINK] RX type=%u src=0x%04X",
+                                 rs->frame_type, rs->src_short);
+                }
+                if (evt.slot_index >= 0) UwbSlots_Free(evt.slot_index);
+                break;
+            }
+            case PHY_EVT_RX_TIMEOUT:
+                app_log_info("[LINK] RX_TIMEOUT after TX");
+                break;
+        }
+    } else {
+        app_log_warn("[LINK] TX timeout (%ums), slot owned by PHY",
+                     (unsigned)LINK_TX_TIMEOUT_MS);
+    }
 }
 
-/* ---- LINK 层看门狗 ---- */
-static void link_watchdog(void)
+/* ---- LINK 层对 PHY 的复位 (保留代码, 暂不使用) ---- */
+#if 0
+static void link_reset_phy(void)
 {
-    uint32_t now = HAL_GetTick();
-    if (g_link.last_phy_evt_ms == 0) {
-        g_link.last_phy_evt_ms = now;
-        return;
-    }
-
-    if ((now - g_link.last_phy_evt_ms) >= LINK_PHY_ALIVE_MS) {
-        app_log_warn("[LINK] PHY no response");
-        g_link.last_phy_evt_ms = now;
-
-        phy_cmd_t cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type       = PHY_CMD_RESET;
-        cmd.slot_index = -1;
-        UwbBuffers_SendCmd(&cmd, 0);
-        UwbPhy_NotifyCmd();
-    }
+    phy_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type       = PHY_CMD_RESET;
+    cmd.slot_index = -1;
+    UwbBuffers_SendCmd(&cmd, 0);
+    UwbPhy_NotifyCmd();
 }
+#endif
 
 /* ================================================================
  *  LINK 接口
@@ -231,21 +255,18 @@ void UwbLink_Task(void *argument)
     app_log_info("[LINK] START short=0x%04X role=%u",
                  g_link.cfg.short_addr, (unsigned)g_link.cfg.role);
 
-    g_link.last_disc_ms    = HAL_GetTick();
-    g_link.last_phy_evt_ms = HAL_GetTick();
+    g_link.last_disc_ms = HAL_GetTick();
 
     for (;;) {
-        /* 回收 PHY 事件 */
+        /* 回收 PHY 事件 (非阻塞, 处理上一轮残留的 RX 事件等) */
         drain_phy_events();
 
-        /* Tag 定时发送 */
+        /* Tag 定时发送 (内含 TX 超时等待) */
         if (g_link.cfg.role == APP_ROLE_TAG) {
             link_tag_send_disc();
         }
 
-        /* 看门狗 */
-        link_watchdog();
-
+        /* Anchor 只需轮询等待 */
         osDelay(LINK_POLL_TIMEOUT_MS);
     }
 }

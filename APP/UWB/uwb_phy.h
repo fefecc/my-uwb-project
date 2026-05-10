@@ -26,10 +26,11 @@ extern "C" {
  *  超时参数
  * ================================================================ */
 
-#define UWB_PHY_WATCHDOG_MS            200U    /* 主循环等 IRQ 最大时间 */
-#define UWB_PHY_RX_SLOT_TIMEOUT_US     65000U  /* 65ms, 每个 RX slot 超时 (uint16 最大 ~65ms) */
-#define UWB_PHY_TX_DELAYED_MIN_US      500U    /* 延时发送最小提前量 */
-#define UWB_PHY_HW_ERROR_THRESHOLD     5U      /* 连续硬件错误上限 */
+#define UWB_PHY_WATCHDOG_MS            50U     /* 活跃状态最后防护, 必须 > RX_SLOT_TIMEOUT (10ms) */
+#define UWB_PHY_IDLE_GUARD_MS      5000U  /* IDLE 监听态保护超时 (仅防止硬件彻底卡死) */
+#define UWB_PHY_RX_SLOT_TIMEOUT_US 10000U /* 10ms, RX slot 超时 (Anchor 应在 ~3ms 内回复) */
+#define UWB_PHY_TX_DELAYED_MIN_US  500U   /* 延时发送最小提前量 */
+#define UWB_PHY_HW_ERROR_THRESHOLD 5U     /* 连续硬件错误上限 */
 
 /* ================================================================
  *  状态机枚举

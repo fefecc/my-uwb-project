@@ -20,6 +20,7 @@
 #include "uwb_timestamp.h"
 #include "../service/log_service.h"
 #include "../service/time_service.h"
+#include "main.h"
 
 /* ---- 状态/中断 清除掩码 ---- */
 #define PHY_STATUS_CLEAR_MASK \
@@ -112,6 +113,17 @@ uint64_t UwbPhy_ReadTxTimestamp(void)
 static void enter_listening(void)
 {
     dwt_forcetrxoff();
+
+    /* 清除残留 status, 确保 IRQ 引脚回到 LOW */
+    {
+        uint32_t residual = dwt_read32bitreg(SYS_STATUS_ID);
+        uint32_t clr = residual & PHY_STATUS_CLEAR_MASK;
+        if (clr) dwt_write32bitreg(SYS_STATUS_ID, clr);
+    }
+
+    /* 清除 EXTI pending, 防止残留事件干扰 */
+    __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_8);
+
     dwt_setrxtimeout(0);  /* 0 = 无超时, 持续监听 */
     dwt_rxenable(0);
     g_phy.state = UWB_PHY_ST_IDLE;
@@ -154,7 +166,13 @@ static void irq_rx_ok(uint32_t status)
     int8_t idx = UwbSlots_Alloc(UWB_SLOT_PHY_OWN);
     if (idx < 0) {
         app_log_warn("[PHY] RX_OK no slot");
-        enter_listening();
+        /* RX_SLOT 状态下: 跳 FINISH 让状态机正常回收 tx_slot */
+        if (g_phy.state == UWB_PHY_ST_RX_SLOT) {
+            g_phy.rx_got_frame = false;
+            g_phy.step = UWB_PHY_STEP_FINISH;
+        } else {
+            enter_listening();
+        }
         return;
     }
 
@@ -289,18 +307,31 @@ static void irq_tx_error(uint32_t status)
     enter_listening();
 }
 
-static void handle_irq(void)
+/* 前向声明: dispatch_status 中 TXFRS+RXFCG 组合处理需要 */
+static void run_state_machine(void);
+
+/**
+ * @brief 根据已读取的 status 分发处理 (线程中调用)
+ */
+static void dispatch_status(uint32_t st)
 {
-    uint32_t st = dwt_read32bitreg(SYS_STATUS_ID);
-    uint32_t cl = st & PHY_STATUS_CLEAR_MASK;
-    if (cl) dwt_write32bitreg(SYS_STATUS_ID, cl);
     if (st == 0) return;
 
-    /* 优先级: RX_OK > TX_DONE > RX_TIMEOUT > RX_ERROR > TX_ERROR */
-    if (st & SYS_STATUS_RXFCG) {
-        irq_rx_ok(st);
-    } else if (st & SYS_STATUS_TXFRS) {
+    /* 当 TXFRS 和 RXFCG 同时置位 (TX 完成后 Anchor 快速回复):
+     * 必须先完成 TX FINISH 流程 (上报 TX_DONE + 进入 RX_SLOT),
+     * 然后再处理 RXFCG */
+    if ((st & SYS_STATUS_TXFRS) && (st & SYS_STATUS_RXFCG)) {
+        irq_tx_done();           /* step → FINISH */
+        run_state_machine();     /* TX FINISH → RX_SLOT PREPARE */
+        run_state_machine();     /* RX_SLOT PREPARE → WAIT */
+        irq_rx_ok(st);           /* 处理已收到的帧 */
+        return;
+    }
+
+    if (st & SYS_STATUS_TXFRS) {
         irq_tx_done();
+    } else if (st & SYS_STATUS_RXFCG) {
+        irq_rx_ok(st);
     } else if (st & SYS_STATUS_RXRFTO) {
         irq_rx_timeout();
     } else if (st & SYS_STATUS_ALL_RX_ERR) {
@@ -308,6 +339,21 @@ static void handle_irq(void)
     } else if (st & SYS_STATUS_TXBERR) {
         irq_tx_error(st);
     }
+}
+
+/**
+ * @brief 从 ISR 缓存中取出 status 并分发处理
+ */
+static void handle_irq(void)
+{
+    uint32_t st = dwt_read32bitreg(SYS_STATUS_ID);
+    uint32_t cl = st & PHY_STATUS_CLEAR_MASK;
+    if (cl) dwt_write32bitreg(SYS_STATUS_ID, cl);
+
+    /* 清除 EXTI pending, 防止 status 清除后残留的上升沿 */
+    __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_8);
+
+    dispatch_status(st);
 }
 
 /* ================================================================
@@ -365,6 +411,17 @@ static void run_state_machine(void)
                 break;
             }
 
+            /* 停止收发 + 清除残留 status, 确保 IRQ 引脚回到 LOW
+             * 防止 TXFRS 因引脚已高而无法产生上升沿 */
+            dwt_forcetrxoff();
+            {
+                uint32_t residual = dwt_read32bitreg(SYS_STATUS_ID);
+                uint32_t clr = residual & PHY_STATUS_CLEAR_MASK;
+                if (clr) dwt_write32bitreg(SYS_STATUS_ID, clr);
+            }
+            /* 清除 EXTI pending */
+            __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_8);
+
             /* slot→SPI 拷贝 */
             dwt_writetxdata(s->data_len + 2U, s->data, 0);
             dwt_writetxfctrl(s->data_len + 2U, 0);
@@ -375,9 +432,10 @@ static void run_state_machine(void)
                 ret = dwt_starttx(DWT_START_TX_DELAYED);
                 if (ret != 0) {
                     app_log_warn("[PHY] TX_DELAY_FAIL");
-                    phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = g_phy.tx_slot };
-                    UwbBuffers_SendEvt(&evt, 0);
+                    UwbSlots_Free(g_phy.tx_slot);
                     g_phy.tx_slot = -1;
+                    phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = -1 };
+                    UwbBuffers_SendEvt(&evt, 0);
                     enter_listening();
                     break;
                 }
@@ -385,9 +443,10 @@ static void run_state_machine(void)
                 ret = dwt_starttx(DWT_START_TX_IMMEDIATE);
                 if (ret != 0) {
                     app_log_warn("[PHY] TX_IMM_FAIL");
-                    phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = g_phy.tx_slot };
-                    UwbBuffers_SendEvt(&evt, 0);
+                    UwbSlots_Free(g_phy.tx_slot);
                     g_phy.tx_slot = -1;
+                    phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = -1 };
+                    UwbBuffers_SendEvt(&evt, 0);
                     enter_listening();
                     break;
                 }
@@ -419,12 +478,18 @@ static void run_state_machine(void)
                 s->tx_ts = UwbPhy_ReadTxTimestamp();
             }
 
-            /* 上报 TX_DONE */
-            phy_evt_t evt = { .type = PHY_EVT_TX_DONE, .slot_index = g_phy.tx_slot };
+            /* PHY 层直接回收 TX slot */
+            if (g_phy.tx_slot >= 0) {
+                UwbSlots_Free(g_phy.tx_slot);
+            }
+
+            /* 上报 TX_DONE (slot 已回收, index=-1) */
+            phy_evt_t evt = { .type = PHY_EVT_TX_DONE, .slot_index = -1 };
             UwbBuffers_SendEvt(&evt, 0);
 
             if (g_phy.pending_rx) {
                 /* 进入 RX_SLOT 等待应答 */
+                g_phy.tx_slot        = -1;
                 g_phy.rx_done_count  = 0;
                 g_phy.rx_total_count = g_phy.pending_rx_count;
                 g_phy.rx_got_frame   = false;
@@ -443,7 +508,14 @@ static void run_state_machine(void)
     /* ---- RX_SLOT ---- */
     case UWB_PHY_ST_RX_SLOT:
         switch (g_phy.step) {
-        case UWB_PHY_STEP_PREPARE:
+        case UWB_PHY_STEP_PREPARE: {
+            /* 清除残留 status, 确保 IRQ 引脚回到 LOW */
+            uint32_t residual = dwt_read32bitreg(SYS_STATUS_ID);
+            uint32_t clr = residual & PHY_STATUS_CLEAR_MASK;
+            if (clr) dwt_write32bitreg(SYS_STATUS_ID, clr);
+            /* 清除 EXTI pending */
+            __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_8);
+
             dwt_setrxtimeout(g_phy.pending_rx_timeout_us);
             if (dwt_rxenable(0) != 0) {
                 app_log_warn("[PHY] RX enable fail");
@@ -452,6 +524,7 @@ static void run_state_machine(void)
             }
             g_phy.step = UWB_PHY_STEP_WAIT;
             break;
+        }
 
         case UWB_PHY_STEP_WAIT:
             break;  /* 等 irq_rx_ok/timeout → step=FINISH */
@@ -551,31 +624,72 @@ void UwbPhy_Task(void *argument)
     for (;;) {
         uint32_t notify = 0;
 
-        /* 如果状态机有待执行的 PREPARE，不阻塞，立即执行 */
-        TickType_t wait_ticks =
-            (g_phy.state != UWB_PHY_ST_IDLE && g_phy.step == UWB_PHY_STEP_PREPARE)
-            ? 0
-            : pdMS_TO_TICKS(UWB_PHY_WATCHDOG_MS);
+        /* 根据状态选择等待时间:
+         *   - PREPARE 待执行: 不阻塞, 立即执行
+         *   - 活跃状态 (TX/RX_SLOT) WAIT: 5ms 看门狗
+         *   - IDLE 监听状态: 1s 保护超时
+         */
+        TickType_t wait_ticks;
+        if (g_phy.state != UWB_PHY_ST_IDLE && g_phy.step == UWB_PHY_STEP_PREPARE) {
+            wait_ticks = 0;
+        } else if (g_phy.state != UWB_PHY_ST_IDLE) {
+            wait_ticks = pdMS_TO_TICKS(UWB_PHY_WATCHDOG_MS);
+        } else {
+            wait_ticks = pdMS_TO_TICKS(UWB_PHY_IDLE_GUARD_MS);
+        }
 
         BaseType_t got = xTaskNotifyWait(
             0, UINT32_MAX, &notify, wait_ticks);
 
-        /* ---- 看门狗：等 IRQ 超时 ---- */
+        /* ---- 软件轮询兜底: 5ms 内补偿 EXTI 上升沿丢失 ---- */
+        if (g_phy.state != UWB_PHY_ST_IDLE) {
+            uint32_t poll_st = dwt_read32bitreg(SYS_STATUS_ID);
+            if (poll_st & (SYS_STATUS_RXFCG | SYS_STATUS_TXFRS |
+                           SYS_STATUS_RXRFTO | SYS_STATUS_ALL_RX_ERR |
+                           SYS_STATUS_TXBERR)) {
+                /* 有可操作的 status 位, 清除并处理 */
+                uint32_t cl = poll_st & PHY_STATUS_CLEAR_MASK;
+                if (cl) dwt_write32bitreg(SYS_STATUS_ID, cl);
+                __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_8);
+                if (!(notify & PHY_NOTIFY_IRQ)) {
+                    app_log_warn("[PHY] POLL_CATCH st=0x%08lX",
+                                 (unsigned long)poll_st);
+                }
+                dispatch_status(poll_st);
+                run_state_machine();
+                continue;
+            }
+        }
+
+        /* ---- 看门狗: 活跃状态等 DW1000 中断超时 ---- */
         if (got != pdPASS && wait_ticks > 0 && g_phy.state != UWB_PHY_ST_IDLE) {
-            app_log_warn("[PHY] WATCHDOG state=%u step=%u",
-                         (unsigned)g_phy.state, (unsigned)g_phy.step);
+            /* 诊断: 读 DW1000 status + IRQ 引脚电平 */
+            uint32_t diag_st = dwt_read32bitreg(SYS_STATUS_ID);
+            uint8_t pin_level = (uint8_t)HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_8);
+            app_log_warn("[PHY] WATCHDOG state=%u step=%u st=0x%08lX pin=%u",
+                         (unsigned)g_phy.state, (unsigned)g_phy.step,
+                         (unsigned long)diag_st, (unsigned)pin_level);
             g_phy.hw_error_count++;
             dwt_forcetrxoff();
             /* 释放占用的 slot */
             if (g_phy.tx_slot >= 0) {
-                phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = g_phy.tx_slot };
-                UwbBuffers_SendEvt(&evt, 0);
+                UwbSlots_Free(g_phy.tx_slot);
                 g_phy.tx_slot = -1;
+                phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = -1 };
+                UwbBuffers_SendEvt(&evt, 0);
             }
             if (g_phy.rx_slot >= 0) {
                 UwbSlots_Free(g_phy.rx_slot);
                 g_phy.rx_slot = -1;
             }
+            enter_listening();
+            continue;
+        }
+
+        /* ---- IDLE 保护: 1s 超时只做静默重新监听, 不计错误 ---- */
+        if (got != pdPASS && g_phy.state == UWB_PHY_ST_IDLE) {
+            /* 监听模式下没有活跃操作, 不需要报错
+             * 只重新启动监听, 防止 DW1000 接收机卡死 */
             enter_listening();
             continue;
         }

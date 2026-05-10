@@ -13,3 +13,6 @@
 # eide template
 *.ept
 *.eide-template
+
+# serial logs
+/scripts/logs/
