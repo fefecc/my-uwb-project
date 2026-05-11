@@ -5,18 +5,18 @@
 #include "../service/config_service.h"
 #include "../service/log_service.h"
 
-// Default DW1000 configuration (explicit values from library)
+// Default DW1000 configuration - 850kbps / PRF64 / Preamble256
 static const dwt_config_t kDefaultDwtConfig = {
     .chan           = 2,
     .prf            = DWT_PRF_64M,
-    .txPreambLength = DWT_PLEN_1024,
-    .rxPAC          = DWT_PAC32,
+    .txPreambLength = DWT_PLEN_256,     /* 850k 推荐 256 符号 */
+    .rxPAC          = DWT_PAC16,        /* 匹配 preamble 256 */
     .txCode         = 9,
     .rxCode         = 9,
-    .nsSFD          = 1,
-    .dataRate       = DWT_BR_110K,
+    .nsSFD          = 1,                /* 非标 SFD (850k 推荐) */
+    .dataRate       = DWT_BR_850K,      /* 850 kbps */
     .phrMode        = DWT_PHRMODE_STD,
-    .sfdTO          = (1025 + 64 - 32),
+    .sfdTO          = (256 + 1 + 8 - 16),  /* preamble + 1 + SFD(8, nsSFD@850k) - PAC(16) = 249 */
 };
 
 dw1000_local_device_t local_device = {

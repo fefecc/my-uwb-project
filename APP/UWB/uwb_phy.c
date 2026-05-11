@@ -26,7 +26,8 @@
 #define PHY_STATUS_CLEAR_MASK \
     (SYS_STATUS_ALL_TX | SYS_STATUS_ALL_RX_GOOD | \
      SYS_STATUS_ALL_RX_ERR | SYS_STATUS_RXOVRR | \
-     SYS_STATUS_HPDWARN | SYS_STATUS_TXBERR)
+     SYS_STATUS_HPDWARN | SYS_STATUS_TXBERR | \
+     SYS_STATUS_SLP2INIT | SYS_STATUS_RFPLL_LL | SYS_STATUS_CLKPLL_LL)
 
 #define PHY_INT_MASK \
     (DWT_INT_TFRS | DWT_INT_RFCG | DWT_INT_RFTO | \
@@ -278,18 +279,26 @@ static void irq_rx_timeout(void)
 static void irq_rx_error(uint32_t status)
 {
     g_phy.rx_err_cnt++;
-    app_log_warn("[PHY] RX_ERR st=0x%08lX cnt=%lu",
-                 (unsigned long)status,
-                 (unsigned long)g_phy.rx_err_cnt);
     dwt_forcetrxoff();
     dwt_rxreset();
     g_phy.rx_got_frame = false;
 
-    /* IDLE 状态下: 直接重新监听, 不依赖状态机 */
+    /* IDLE 状态下: 环境噪声触发的 RX 错误是正常现象,
+     * 每 50 次才记录一条日志, 避免刷屏 */
     if (g_phy.state == UWB_PHY_ST_IDLE) {
+        if (g_phy.rx_err_cnt <= 1 || (g_phy.rx_err_cnt % 50) == 0) {
+            app_log_warn("[PHY] RX_ERR(idle) st=0x%08lX cnt=%lu",
+                         (unsigned long)status,
+                         (unsigned long)g_phy.rx_err_cnt);
+        }
         enter_listening();
         return;
     }
+
+    /* 活跃状态 (TX/RX_SLOT): 始终记录 */
+    app_log_warn("[PHY] RX_ERR st=0x%08lX cnt=%lu",
+                 (unsigned long)status,
+                 (unsigned long)g_phy.rx_err_cnt);
 
     /* RX_SLOT 状态下: 跳 FINISH 由状态机处理 */
     g_phy.step = UWB_PHY_STEP_FINISH;
@@ -580,6 +589,11 @@ static void run_state_machine(void)
                 phy_evt_t evt = { .type = PHY_EVT_RX_FRAME, .slot_index = g_phy.rx_slot };
                 UwbBuffers_SendEvt(&evt, 0);
                 g_phy.rx_slot = -1;
+
+                /* 已收到有效帧, 立即结束 RX 窗口.
+                 * 不再继续监听剩余 slot, 避免接收环境噪声产生大量 RX_ERR */
+                enter_listening();
+                break;
             }
 
             g_phy.rx_done_count++;
@@ -588,12 +602,9 @@ static void run_state_machine(void)
             if (g_phy.rx_done_count < g_phy.rx_total_count) {
                 g_phy.step = UWB_PHY_STEP_PREPARE;  /* 下一个 slot */
             } else {
-                /* 所有 RX slot 结束 */
-                if (!got_frame_this_slot) {
-                    /* 真正超时: 没有收到任何帧 */
-                    phy_evt_t evt = { .type = PHY_EVT_RX_TIMEOUT, .slot_index = -1 };
-                    UwbBuffers_SendEvt(&evt, 0);
-                }
+                /* 所有 RX slot 结束, 未收到有效帧 */
+                phy_evt_t evt = { .type = PHY_EVT_RX_TIMEOUT, .slot_index = -1 };
+                UwbBuffers_SendEvt(&evt, 0);
                 enter_listening();
             }
             break;

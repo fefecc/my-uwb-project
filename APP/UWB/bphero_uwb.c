@@ -4,19 +4,19 @@
 #include "uwb_device.h"
 #include "deca_regs.h"
 
-/* Default communication configuration. We use here EVK1000's default mode (mode 3). */
+/* Default communication configuration - 850kbps / PRF64 / Preamble256 */
 static dwt_config_t config =
     {
         2,               /* Channel number. */
         DWT_PRF_64M,     /* Pulse repetition frequency. */
-        DWT_PLEN_1024,   /* Preamble length. Used in TX only. */
-        DWT_PAC32,       /* Preamble acquisition chunk size. Used in RX only. */
+        DWT_PLEN_256,    /* Preamble length. 850k 推荐 256 */
+        DWT_PAC16,       /* Preamble acquisition chunk size. 匹配 256 */
         9,               /* TX preamble code. Used in TX only. */
         9,               /* RX preamble code. Used in RX only. */
         1,               /* 0 to use standard SFD, 1 to use non-standard SFD. */
-        DWT_BR_110K,     /* Data rate. */
+        DWT_BR_850K,     /* Data rate - 850 kbps */
         DWT_PHRMODE_STD, /* PHY header mode. */
-        (1025 + 64 - 32) /* SFD timeout (preamble length + 1 + SFD length - PAC*/
+        (256 + 1 + 8 - 16)  /* SFD timeout = 249 (nsSFD@850k: SFD=8符号) */
 };
 
 void pa_init_config(void)
@@ -36,7 +36,9 @@ static void apply_dw1000_optimizations(const dwt_config_t *config)
 
     dwt_writetodevice(AGC_CTRL_ID, AGC_TUNE1_OFFSET, 2, (uint8_t[]){0x9B, 0x88});
     dwt_write32bitoffsetreg(AGC_CTRL_ID, AGC_TUNE2_OFFSET, 0x2502A907);
-    dwt_writetodevice(DRX_CONF_ID, DRX_TUNE2_OFFSET, 4, (uint8_t[]){0x5E, 0x01, 0x3B, 0x35});
+    /* DRX_TUNE2: PAC16 / PRF 64MHz (DW1000 User Manual Table 18)
+     * PRF16: 0x331A0052, PRF64: 0x333B00BE */
+    dwt_writetodevice(DRX_CONF_ID, DRX_TUNE2_OFFSET, 4, (uint8_t[]){0xBE, 0x00, 0x3B, 0x33});
     dwt_writetodevice(LDE_IF_ID, LDE_CFG2_OFFSET, 2, (uint8_t[]){0x07, 0x06});
 
     if (config->chan == 5) {
