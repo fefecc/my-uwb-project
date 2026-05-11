@@ -109,7 +109,7 @@ targets:
         protocol: swd
         speed: 0
         target: STM32F103C8
-    uploader: JLink
+    uploader: OpenOCD
   Release:
     cppPreprocessAttrs:
       defineList:

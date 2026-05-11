@@ -159,6 +159,9 @@ static uint16_t build_fast_reply_ack(uint16_t dst_short, uint8_t seq)
 
 static void irq_rx_ok(uint32_t status)
 {
+    /* PHY 级时间戳: IRQ 触发的瞬间, 不含 LINK 层队列延迟 */
+    app_log_info("[PHY] RX_OK");
+
     /* 成功收帧, 清除连续错误计数 */
     g_phy.rx_err_cnt = 0;
 
@@ -343,10 +346,49 @@ static void dispatch_status(uint32_t st)
 
 /**
  * @brief 从 ISR 缓存中取出 status 并分发处理
+ *
+ * SPI 容错: 如果读取的 status 包含 reserved bit19 (DW1000 永远不会置位),
+ * 说明 SPI 读到了垃圾数据。最多重试 3 次, 任何一次读到合法值则正常处理;
+ * 3 次全部失败则恢复到监听模式并上报错误。
  */
 static void handle_irq(void)
 {
-    uint32_t st = dwt_read32bitreg(SYS_STATUS_ID);
+    uint32_t st;
+    int retry;
+
+    for (retry = 0; retry < 3; retry++) {
+        st = dwt_read32bitreg(SYS_STATUS_ID);
+        if (!(st & SYS_STATUS_reserved)) {
+            break;  /* 合法值, 跳出 */
+        }
+    }
+
+    if (retry > 0) {
+        app_log_warn("[PHY] IRQ status retry=%d st=0x%08lX",
+                     retry, (unsigned long)st);
+    }
+
+    /* 3 次全部读到垃圾: SPI 链路故障, 恢复监听 + 上报错误 */
+    if (st & SYS_STATUS_reserved) {
+        app_log_warn("[PHY] IRQ SPI_FAIL st=0x%08lX, recover",
+                     (unsigned long)st);
+        g_phy.hw_error_count++;
+        dwt_forcetrxoff();
+        if (g_phy.tx_slot >= 0) {
+            UwbSlots_Free(g_phy.tx_slot);
+            g_phy.tx_slot = -1;
+        }
+        if (g_phy.rx_slot >= 0) {
+            UwbSlots_Free(g_phy.rx_slot);
+            g_phy.rx_slot = -1;
+        }
+        phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = -1 };
+        UwbBuffers_SendEvt(&evt, 0);
+        enter_listening();
+        return;
+    }
+
+    /* 合法 status: 正常清除并处理 */
     uint32_t cl = st & PHY_STATUS_CLEAR_MASK;
     if (cl) dwt_write32bitreg(SYS_STATUS_ID, cl);
 
@@ -522,6 +564,7 @@ static void run_state_machine(void)
                 enter_listening();
                 break;
             }
+            app_log_info("[PHY] RX_SLOT_ON");
             g_phy.step = UWB_PHY_STEP_WAIT;
             break;
         }
@@ -641,12 +684,21 @@ void UwbPhy_Task(void *argument)
         BaseType_t got = xTaskNotifyWait(
             0, UINT32_MAX, &notify, wait_ticks);
 
-        /* ---- 软件轮询兜底: 5ms 内补偿 EXTI 上升沿丢失 ---- */
+        /* ---- 软件轮询兜底: 补偿 EXTI 上升沿丢失 ---- */
         if (g_phy.state != UWB_PHY_ST_IDLE) {
             uint32_t poll_st = dwt_read32bitreg(SYS_STATUS_ID);
-            if (poll_st & (SYS_STATUS_RXFCG | SYS_STATUS_TXFRS |
-                           SYS_STATUS_RXRFTO | SYS_STATUS_ALL_RX_ERR |
-                           SYS_STATUS_TXBERR)) {
+
+            /* reserved bit19 检测: DW1000 永远不会置位此位,
+             * 如果读到说明 SPI 返回垃圾数据.
+             * 注意: 不 continue, 让执行流落到看门狗处理 */
+            if (poll_st & SYS_STATUS_reserved) {
+                app_log_warn("[PHY] POLL SPI_GARBAGE st=0x%08lX",
+                             (unsigned long)poll_st);
+                /* 不处理垃圾 status, 也不 continue,
+                 * 落到下面看门狗超时后自然恢复 */
+            } else if (poll_st & (SYS_STATUS_RXFCG | SYS_STATUS_TXFRS |
+                                  SYS_STATUS_RXRFTO | SYS_STATUS_ALL_RX_ERR |
+                                  SYS_STATUS_TXBERR)) {
                 /* 有可操作的 status 位, 清除并处理 */
                 uint32_t cl = poll_st & PHY_STATUS_CLEAR_MASK;
                 if (cl) dwt_write32bitreg(SYS_STATUS_ID, cl);
@@ -666,22 +718,24 @@ void UwbPhy_Task(void *argument)
             /* 诊断: 读 DW1000 status + IRQ 引脚电平 */
             uint32_t diag_st = dwt_read32bitreg(SYS_STATUS_ID);
             uint8_t pin_level = (uint8_t)HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_8);
-            app_log_warn("[PHY] WATCHDOG state=%u step=%u st=0x%08lX pin=%u",
+            app_log_warn("[PHY] WATCHDOG state=%u step=%u st=0x%08lX pin=%u err=%lu",
                          (unsigned)g_phy.state, (unsigned)g_phy.step,
-                         (unsigned long)diag_st, (unsigned)pin_level);
+                         (unsigned long)diag_st, (unsigned)pin_level,
+                         (unsigned long)g_phy.hw_error_count);
             g_phy.hw_error_count++;
             dwt_forcetrxoff();
             /* 释放占用的 slot */
             if (g_phy.tx_slot >= 0) {
                 UwbSlots_Free(g_phy.tx_slot);
                 g_phy.tx_slot = -1;
-                phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = -1 };
-                UwbBuffers_SendEvt(&evt, 0);
             }
             if (g_phy.rx_slot >= 0) {
                 UwbSlots_Free(g_phy.rx_slot);
                 g_phy.rx_slot = -1;
             }
+            /* 始终上报错误给 LINK 层, 无论是 TX 还是 RX 超时 */
+            phy_evt_t evt = { .type = PHY_EVT_ERROR, .slot_index = -1 };
+            UwbBuffers_SendEvt(&evt, 0);
             enter_listening();
             continue;
         }

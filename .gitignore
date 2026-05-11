@@ -14,5 +14,5 @@
 *.ept
 *.eide-template
 
-# serial logs
-/scripts/logs/
+# scripts (分析工具 & 日志, 不入库)
+/scripts/
