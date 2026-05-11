@@ -109,6 +109,13 @@ targets:
         protocol: swd
         speed: 0
         target: STM32F103C8
+      pyOCD:
+        baseAddr: "0x08000000"
+        bin: ""
+        config: .eide/debug.pyocd.yaml
+        otherCmds: ""
+        speed: 4M
+        targetName: cortex_m
     uploader: OpenOCD
   Release:
     cppPreprocessAttrs:

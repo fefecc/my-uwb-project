@@ -15,6 +15,7 @@ extern "C" {
 bool AppTasks_CreateAll(AppMode mode);
 void AppTasks_LogInit(void);
 bool AppTasks_LogWriteText(const char *text, size_t len);
+bool AppTasks_LogWriteSd(const char *text, size_t len);
 void AppTasks_NotifyImuIrqFromISR(void);
 void AppTasks_NotifyKeyIrqFromISR(void);
 void AppTasks_NotifyGnssDmaBlockFromISR(uint32_t len);

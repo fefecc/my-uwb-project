@@ -62,6 +62,26 @@ bool StorageService_OpenNextLog(FIL *file)
     return false;
 }
 
+bool StorageService_OpenNextUwbLog(FIL *file)
+{
+    if (file == NULL) {
+        return false;
+    }
+
+    char name[48];
+    for (uint32_t i = 1; i < 10000U; ++i) {
+        (void)snprintf(name, sizeof(name),
+                       "tag_uwb_log_%04lu.log",
+                       (unsigned long)i);
+        FILINFO info;
+        if (f_stat(name, &info) == FR_NO_FILE) {
+            return f_open(file, name, FA_CREATE_NEW | FA_WRITE) == FR_OK;
+        }
+    }
+
+    return false;
+}
+
 bool StorageService_WriteBlock(FIL *file, const uint8_t *data, size_t len)
 {
     if (file == NULL || data == NULL || len == 0U) {

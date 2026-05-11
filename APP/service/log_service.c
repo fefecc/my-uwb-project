@@ -84,6 +84,9 @@ void LogService_VWrite(AppLogLevel level, const char *fmt, va_list args)
     }
 
     (void)AppTasks_LogWriteText(line, bounded_strlen(line, sizeof(line)));
+
+    /* SD 卡日志写入 (非阻塞, 写入环形缓冲区) */
+    (void)AppTasks_LogWriteSd(line, bounded_strlen(line, sizeof(line)));
 }
 
 void LogService_Write(AppLogLevel level, const char *fmt, ...)

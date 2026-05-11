@@ -60,6 +60,11 @@ typedef enum {
     APP_SD_BLOCK_BACKUP = 1,
 } AppSdBlockId;
 
+/* UWB 日志 SD 用独立的通知位 (bit2, bit3), 与数据 FIFO 的 bit0/bit1 互不干扰 */
+#define APP_UWB_SD_NOTIFY_MAIN   (1UL << 2)
+#define APP_UWB_SD_NOTIFY_BACKUP (1UL << 3)
+#define APP_UWB_SD_NOTIFY_MASK   (APP_UWB_SD_NOTIFY_MAIN | APP_UWB_SD_NOTIFY_BACKUP)
+
 typedef enum {
     APP_USART_LOG_SLOT_CMD = 0,
     APP_USART_LOG_SLOT_SYSTEM,
@@ -137,6 +142,9 @@ typedef struct __attribute__((packed)) {
     float hor_spd_std;
 } GnssBestNavFrame;
 
+/* 前向声明: UWB SD FIFO 写入 (定义在后面) */
+static bool uwb_sd_fifo_write(const uint8_t *data, size_t len);
+
 static AppMode g_app_mode = APP_MODE_RUN;
 
 static TaskHandle_t g_gnss_task;
@@ -171,6 +179,14 @@ static uint8_t g_sd_backup_block[APP_SD_BLOCK_SIZE];
 static AppSdFifo g_sd_fifo;
 static StaticSemaphore_t g_sd_fifo_mutex_ctrl;
 static SemaphoreHandle_t g_sd_fifo_mutex;
+
+/* UWB 日志 SD FIFO (独立 16KB×2 双缓冲) */
+static uint8_t g_uwb_sd_main_block[APP_SD_BLOCK_SIZE];
+static uint8_t g_uwb_sd_backup_block[APP_SD_BLOCK_SIZE];
+static AppSdFifo g_uwb_sd_fifo;
+static StaticSemaphore_t g_uwb_sd_fifo_mutex_ctrl;
+static SemaphoreHandle_t g_uwb_sd_fifo_mutex;
+static bool g_uwb_sd_ready;
 
 static uint32_t sd_ready_bit(AppSdBlockId id)
 {
@@ -395,6 +411,11 @@ bool AppTasks_LogWriteText(const char *text, size_t len)
                                 len);
 }
 
+bool AppTasks_LogWriteSd(const char *text, size_t len)
+{
+    return uwb_sd_fifo_write((const uint8_t *)text, len);
+}
+
 static bool init_sd_fifo(void)
 {
     if (g_sd_fifo_mutex == NULL) {
@@ -409,6 +430,19 @@ static bool init_sd_fifo(void)
     g_sd_fifo.block[APP_SD_BLOCK_MAIN]   = g_sd_main_block;
     g_sd_fifo.block[APP_SD_BLOCK_BACKUP] = g_sd_backup_block;
     g_sd_fifo.active                     = APP_SD_BLOCK_MAIN;
+
+    /* UWB 日志 FIFO */
+    if (g_uwb_sd_fifo_mutex == NULL) {
+        g_uwb_sd_fifo_mutex = xSemaphoreCreateMutexStatic(&g_uwb_sd_fifo_mutex_ctrl);
+    }
+    if (g_uwb_sd_fifo_mutex == NULL) {
+        return false;
+    }
+    memset(&g_uwb_sd_fifo, 0, sizeof(g_uwb_sd_fifo));
+    g_uwb_sd_fifo.block[APP_SD_BLOCK_MAIN]   = g_uwb_sd_main_block;
+    g_uwb_sd_fifo.block[APP_SD_BLOCK_BACKUP] = g_uwb_sd_backup_block;
+    g_uwb_sd_fifo.active                     = APP_SD_BLOCK_MAIN;
+    g_uwb_sd_ready = false;
 
     return true;
 }
@@ -514,6 +548,167 @@ static bool sd_fifo_write_ascii(const uint8_t *data, size_t len, AppDataSource s
     }
 
     return true;
+}
+
+/* ---- UWB 日志 SD FIFO 操作 (与数据 FIFO 结构相同, 使用独立的缓冲和互斥) ---- */
+
+static bool uwb_sd_fifo_take(void)
+{
+    return g_uwb_sd_fifo_mutex != NULL &&
+           xSemaphoreTake(g_uwb_sd_fifo_mutex, portMAX_DELAY) == pdTRUE;
+}
+
+static void uwb_sd_fifo_give(void)
+{
+    (void)xSemaphoreGive(g_uwb_sd_fifo_mutex);
+}
+
+static bool uwb_sd_fifo_active_writable(void)
+{
+    uint8_t active = g_uwb_sd_fifo.active;
+    return active < 2U &&
+           !g_uwb_sd_fifo.ready[active] &&
+           !g_uwb_sd_fifo.locked[active];
+}
+
+static bool uwb_sd_fifo_switch_to_free(void)
+{
+    uint8_t next = g_uwb_sd_fifo.active ^ 1U;
+    if (g_uwb_sd_fifo.ready[next] || g_uwb_sd_fifo.locked[next]) {
+        return false;
+    }
+    g_uwb_sd_fifo.active    = next;
+    g_uwb_sd_fifo.len[next] = 0;
+    return true;
+}
+
+static void notify_uwb_sd_block_ready(AppSdBlockId id)
+{
+    if (g_sd_writer_task == NULL) {
+        return;
+    }
+    uint32_t bit = (id == APP_SD_BLOCK_MAIN) ?
+                   APP_UWB_SD_NOTIFY_MAIN : APP_UWB_SD_NOTIFY_BACKUP;
+    (void)xTaskNotify(g_sd_writer_task, bit, eSetBits);
+}
+
+static bool uwb_sd_fifo_write(const uint8_t *data, size_t len)
+{
+    if (!g_uwb_sd_ready) {
+        return false;
+    }
+
+    const uint8_t *src = data;
+    size_t remaining   = len;
+
+    while (remaining > 0U) {
+        AppSdBlockId ready_id = APP_SD_BLOCK_MAIN;
+        bool has_ready        = false;
+        bool no_free          = false;
+        size_t copied         = 0;
+
+        if (!uwb_sd_fifo_take()) {
+            return false;
+        }
+
+        if (!uwb_sd_fifo_active_writable() && !uwb_sd_fifo_switch_to_free()) {
+            no_free = true;
+        }
+
+        if (!no_free) {
+            uint8_t active = g_uwb_sd_fifo.active;
+            size_t space   = APP_SD_BLOCK_SIZE - g_uwb_sd_fifo.len[active];
+            copied         = remaining < space ? remaining : space;
+
+            memcpy(&g_uwb_sd_fifo.block[active][g_uwb_sd_fifo.len[active]],
+                   src, copied);
+            g_uwb_sd_fifo.len[active] += copied;
+
+            if (g_uwb_sd_fifo.len[active] == APP_SD_BLOCK_SIZE) {
+                ready_id                     = (AppSdBlockId)active;
+                g_uwb_sd_fifo.ready[active]  = true;
+                has_ready                    = true;
+
+                if (!uwb_sd_fifo_switch_to_free()) {
+                    no_free = true;
+                }
+            }
+        }
+
+        uwb_sd_fifo_give();
+
+        if (has_ready) {
+            notify_uwb_sd_block_ready(ready_id);
+        }
+
+        if (no_free) {
+            return false;  /* 静默丢弃, 避免递归日志 */
+        }
+
+        src += copied;
+        remaining -= copied;
+    }
+
+    return true;
+}
+
+static bool uwb_sd_fifo_lock_block(AppSdBlockId id,
+                                   const uint8_t **data, size_t *len)
+{
+    uint8_t index = (uint8_t)id;
+    bool locked   = false;
+
+    if (data == NULL || len == NULL || index >= 2U || !uwb_sd_fifo_take()) {
+        return false;
+    }
+
+    if (g_uwb_sd_fifo.ready[index] && !g_uwb_sd_fifo.locked[index]) {
+        g_uwb_sd_fifo.locked[index] = true;
+        *data                       = g_uwb_sd_fifo.block[index];
+        *len                        = g_uwb_sd_fifo.len[index];
+        locked                      = true;
+    }
+
+    uwb_sd_fifo_give();
+    return locked;
+}
+
+static void uwb_sd_fifo_release_block(AppSdBlockId id)
+{
+    uint8_t index = (uint8_t)id;
+    if (index >= 2U || !uwb_sd_fifo_take()) {
+        return;
+    }
+    g_uwb_sd_fifo.ready[index]  = false;
+    g_uwb_sd_fifo.locked[index] = false;
+    g_uwb_sd_fifo.len[index]    = 0;
+    uwb_sd_fifo_give();
+}
+
+static void uwb_sd_fifo_unlock_block(AppSdBlockId id)
+{
+    uint8_t index = (uint8_t)id;
+    if (index >= 2U || !uwb_sd_fifo_take()) {
+        return;
+    }
+    g_uwb_sd_fifo.locked[index] = false;
+    uwb_sd_fifo_give();
+}
+
+static uint32_t uwb_sd_fifo_ready_bits(void)
+{
+    uint32_t bits = 0;
+    if (!uwb_sd_fifo_take()) {
+        return 0U;
+    }
+    for (uint32_t id = APP_SD_BLOCK_MAIN; id <= APP_SD_BLOCK_BACKUP; ++id) {
+        if (g_uwb_sd_fifo.ready[id] && !g_uwb_sd_fifo.locked[id]) {
+            bits |= (id == APP_SD_BLOCK_MAIN) ?
+                    APP_UWB_SD_NOTIFY_MAIN : APP_UWB_SD_NOTIFY_BACKUP;
+        }
+    }
+    uwb_sd_fifo_give();
+    return bits;
 }
 
 static bool sd_fifo_lock_block(AppSdBlockId id, const uint8_t **data, size_t *len)
@@ -969,8 +1164,10 @@ void AppSdWriterTask(void *argument)
     (void)argument;
 
     FIL file;
-    bool mounted = false;
-    bool opened  = false;
+    FIL uwb_log_file;
+    bool mounted         = false;
+    bool opened          = false;
+    bool uwb_log_opened  = false;
 
     g_sd_writer_task = xTaskGetCurrentTaskHandle();
 
@@ -991,17 +1188,28 @@ void AppSdWriterTask(void *argument)
             }
         }
 
-        uint32_t notify_bits = sd_fifo_ready_bits();
+        /* UWB 日志文件: 独立打开 */
+        if (!uwb_log_opened) {
+            uwb_log_opened = StorageService_OpenNextUwbLog(&uwb_log_file);
+            if (uwb_log_opened) {
+                g_uwb_sd_ready = true;
+            }
+        }
+
+        /* 合并等待: 数据 FIFO 和 UWB 日志 FIFO 的通知位 */
+        uint32_t notify_bits = sd_fifo_ready_bits() | uwb_sd_fifo_ready_bits();
         if (notify_bits == 0U) {
             if (xTaskNotifyWait(0U,
                                 sd_ready_bit(APP_SD_BLOCK_MAIN) |
-                                    sd_ready_bit(APP_SD_BLOCK_BACKUP),
+                                    sd_ready_bit(APP_SD_BLOCK_BACKUP) |
+                                    APP_UWB_SD_NOTIFY_MASK,
                                 &notify_bits,
                                 portMAX_DELAY) != pdTRUE) {
                 continue;
             }
         }
 
+        /* ---- 处理数据 FIFO (GNSS/IMU) ---- */
         for (uint32_t id = APP_SD_BLOCK_MAIN; id <= APP_SD_BLOCK_BACKUP; ++id) {
             bool write_failed = false;
 
@@ -1034,6 +1242,36 @@ void AppSdWriterTask(void *argument)
 
             if (write_failed) {
                 break;
+            }
+        }
+
+        /* ---- 处理 UWB 日志 FIFO ---- */
+        if (uwb_log_opened) {
+            for (uint32_t id = APP_SD_BLOCK_MAIN; id <= APP_SD_BLOCK_BACKUP; ++id) {
+                uint32_t uwb_bit = (id == APP_SD_BLOCK_MAIN) ?
+                                   APP_UWB_SD_NOTIFY_MAIN : APP_UWB_SD_NOTIFY_BACKUP;
+
+                if ((notify_bits & uwb_bit) == 0U) {
+                    continue;
+                }
+
+                const uint8_t *data = NULL;
+                size_t len          = 0;
+                if (!uwb_sd_fifo_lock_block((AppSdBlockId)id, &data, &len)) {
+                    continue;
+                }
+
+                if (len != APP_SD_BLOCK_SIZE ||
+                    !StorageService_WriteBlock(&uwb_log_file, data, len)) {
+                    (void)f_close(&uwb_log_file);
+                    uwb_log_opened = false;
+                    g_uwb_sd_ready = false;
+                    uwb_sd_fifo_unlock_block((AppSdBlockId)id);
+                    break;
+                } else {
+                    (void)f_sync(&uwb_log_file);
+                    uwb_sd_fifo_release_block((AppSdBlockId)id);
+                }
             }
         }
     }

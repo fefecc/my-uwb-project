@@ -13,6 +13,7 @@ extern "C" {
 
 bool StorageService_Mount(void);
 bool StorageService_OpenNextLog(FIL *file);
+bool StorageService_OpenNextUwbLog(FIL *file);
 bool StorageService_WriteBlock(FIL *file, const uint8_t *data, size_t len);
 bool StorageService_WriteNodeAscii(FIL *file, const AppDataNode *node);
 
