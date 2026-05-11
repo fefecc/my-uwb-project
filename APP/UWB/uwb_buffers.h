@@ -44,12 +44,15 @@ typedef enum {
     PHY_EVT_TX_DONE = 0,
     PHY_EVT_RX_FRAME,
     PHY_EVT_RX_TIMEOUT,
+    PHY_EVT_RX_SLOT_DONE,     /* 单个 RX 时间槽完成 (帧 or 空) */
+    PHY_EVT_RX_WINDOW_END,    /* 所有 RX 时间槽结束 */
     PHY_EVT_ERROR,
 } phy_evt_type_t;
 
 typedef struct {
     phy_evt_type_t type;
-    int8_t slot_index;
+    int8_t slot_index;         /* 物理 slot index, -1 = 无帧 */
+    uint8_t rx_seq;            /* RX 时间槽序号 (0-3), 仅 RX_SLOT_DONE 有效 */
 } phy_evt_t;
 
 /* ---- API ---- */

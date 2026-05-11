@@ -9,6 +9,7 @@
 #include "../task/app_tasks.h"
 
 #define LOG_SERVICE_UWB_ONLY (1U)
+#define LOG_SERVICE_SD_ENABLED  (0U)  /* 屏蔽 SD 卡写入, 防止影响 UWB 实时性 */
 
 static bool is_uwb_task(void)
 {
@@ -86,7 +87,9 @@ void LogService_VWrite(AppLogLevel level, const char *fmt, va_list args)
     (void)AppTasks_LogWriteText(line, bounded_strlen(line, sizeof(line)));
 
     /* SD 卡日志写入 (非阻塞, 写入环形缓冲区) */
+#if LOG_SERVICE_SD_ENABLED
     (void)AppTasks_LogWriteSd(line, bounded_strlen(line, sizeof(line)));
+#endif
 }
 
 void LogService_Write(AppLogLevel level, const char *fmt, ...)

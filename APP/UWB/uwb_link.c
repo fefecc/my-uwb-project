@@ -32,6 +32,7 @@
 #define LINK_DISC_PERIOD_MS       200U   /* 发送 DISC_REQ 的周期 */
 #define LINK_TX_TIMEOUT_MS        50U    /* 等待 PHY 完成 TX 的超时 */
 #define LINK_POLL_TIMEOUT_MS      50U    /* 主循环轮询间隔 (Anchor 用) */
+#define DISC_RX_SLOT_COUNT        4U     /* RX 槽数量, 唯一定义点 */
 
 /* ---- 上下文 ---- */
 typedef struct {
@@ -39,6 +40,7 @@ typedef struct {
     uint16_t window_id;
     uint8_t  seq;
     uint32_t last_disc_ms;
+    int8_t   rx_slot_results[DISC_RX_SLOT_COUNT]; /* ★ 记录每槽结果 */
 } link_context_t;
 
 static link_context_t g_link;
@@ -95,18 +97,45 @@ static void drain_phy_events(void)
 
         switch (evt.type) {
             case PHY_EVT_TX_DONE:
-                /* TX slot 已由 PHY 回收, LINK 只记录日志 */
-                app_log_info("[LINK] TX_DONE (slot recycled by PHY)");
                 break;
 
+            case PHY_EVT_RX_SLOT_DONE: {
+                if (evt.rx_seq < DISC_RX_SLOT_COUNT) {
+                    g_link.rx_slot_results[evt.rx_seq] = evt.slot_index;
+                }
+                /* 有帧: 立即处理帧数据 + 回收物理 slot */
+                if (evt.slot_index >= 0) {
+                    uwb_slot_t *s = UwbSlots_Get(evt.slot_index);
+                    if (s != NULL) {
+                        /* 按需处理帧数据 */
+                    }
+                    UwbSlots_Free(evt.slot_index);  /* ★ 立即回收 */
+                }
+                break;
+            }
+
+            case PHY_EVT_RX_WINDOW_END: {
+                /* ★ 所有 RX 槽结束 - LINK 层输出汇总日志 */
+                uint8_t ok_count = evt.rx_seq;  /* rx_seq 复用为收帧数 */
+                app_log_info("[LINK] RX_WIN ok=%u/%u r=[%d,%d,%d,%d]",
+                             (unsigned)ok_count,
+                             (unsigned)DISC_RX_SLOT_COUNT,
+                             (int)g_link.rx_slot_results[0],
+                             (int)g_link.rx_slot_results[1],
+                             (int)g_link.rx_slot_results[2],
+                             (int)g_link.rx_slot_results[3]);
+                /* 重置 */
+                memset(g_link.rx_slot_results, -1,
+                       sizeof(g_link.rx_slot_results));
+                break;
+            }
+
             case PHY_EVT_RX_FRAME: {
-                /* RX slot 由 LINK 回收 (需要读取帧数据) */
+                /* IDLE 状态收帧 (保留兼容) */
                 uwb_slot_t *s = UwbSlots_Get(evt.slot_index);
                 if (s != NULL) {
-                    app_log_info("[LINK] RX type=%u src=0x%04X rx=0x%02lX%08lX",
-                                 s->frame_type, s->src_short,
-                                 (uint32_t)(s->rx_ts >> 32),
-                                 (uint32_t)(s->rx_ts & 0xFFFFFFFF));
+                    app_log_info("[LINK] RX type=%u src=0x%04X",
+                                 s->frame_type, s->src_short);
                 }
                 if (evt.slot_index >= 0) UwbSlots_Free(evt.slot_index);
                 break;
@@ -117,8 +146,7 @@ static void drain_phy_events(void)
                 break;
 
             case PHY_EVT_ERROR:
-                /* TX slot 已由 PHY 回收, LINK 只记录日志 */
-                app_log_warn("[LINK] PHY_ERROR (slot recycled by PHY)");
+                app_log_warn("[LINK] PHY_ERROR");
                 break;
         }
     }
@@ -161,7 +189,7 @@ static void link_tag_send_disc(void)
     cmd.tx_time        = 0;   /* 立即发送 */
     cmd.has_pending_rx = true;
     cmd.rx_timeout_us  = UWB_PHY_RX_SLOT_TIMEOUT_US;
-    cmd.rx_slot_count  = 1;
+    cmd.rx_slot_count  = DISC_RX_SLOT_COUNT;
 
     if (!UwbBuffers_SendCmd(&cmd, 0)) {
         app_log_warn("[LINK] cmd queue full");
@@ -182,13 +210,35 @@ static void link_tag_send_disc(void)
         /* 处理 TX 结果事件 */
         switch (evt.type) {
             case PHY_EVT_TX_DONE:
-                app_log_info("[LINK] TX_DONE (slot recycled by PHY)");
                 break;
             case PHY_EVT_ERROR:
                 app_log_warn("[LINK] TX failed (slot recycled by PHY)");
                 break;
+            case PHY_EVT_RX_SLOT_DONE: {
+                /* 在等待期间收到 RX 槽事件 */
+                if (evt.rx_seq < DISC_RX_SLOT_COUNT) {
+                    g_link.rx_slot_results[evt.rx_seq] = evt.slot_index;
+                }
+                if (evt.slot_index >= 0) {
+                    UwbSlots_Free(evt.slot_index);
+                }
+                break;
+            }
+            case PHY_EVT_RX_WINDOW_END: {
+                uint8_t ok_count = evt.rx_seq;
+                app_log_info("[LINK] RX_WIN ok=%u/%u r=[%d,%d,%d,%d]",
+                             (unsigned)ok_count,
+                             (unsigned)DISC_RX_SLOT_COUNT,
+                             (int)g_link.rx_slot_results[0],
+                             (int)g_link.rx_slot_results[1],
+                             (int)g_link.rx_slot_results[2],
+                             (int)g_link.rx_slot_results[3]);
+                memset(g_link.rx_slot_results, -1,
+                       sizeof(g_link.rx_slot_results));
+                break;
+            }
             case PHY_EVT_RX_FRAME: {
-                /* 可能在等待期间收到 RX 帧 */
+                /* IDLE 状态收帧 */
                 uwb_slot_t *rs = UwbSlots_Get(evt.slot_index);
                 if (rs != NULL) {
                     app_log_info("[LINK] RX type=%u src=0x%04X",
@@ -230,6 +280,7 @@ bool UwbLink_Init(const UwbStackConfig *cfg)
 
     memset(&g_link, 0, sizeof(g_link));
     g_link.cfg = *cfg;
+    memset(g_link.rx_slot_results, -1, sizeof(g_link.rx_slot_results));
 
     /* 创建 LINK→APP 事件队列 */
     if (g_app_evt_queue == NULL) {

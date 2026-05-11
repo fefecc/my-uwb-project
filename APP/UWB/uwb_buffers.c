@@ -11,7 +11,7 @@
  * ================================================================ */
 
 #define CMD_QUEUE_LEN  4
-#define EVT_QUEUE_LEN  8
+#define EVT_QUEUE_LEN  12
 
 static StaticQueue_t g_cmd_queue_ctrl;
 static uint8_t g_cmd_queue_buf[CMD_QUEUE_LEN * sizeof(phy_cmd_t)];
