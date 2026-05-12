@@ -150,10 +150,15 @@ static void finish_rx_window(void)
  * ================================================================ */
 
 /**
- * @brief 构建 DISC_ACK 快速应答帧到内部 tx_buf
+ * @brief 构建 DISC_RESP 快速应答帧 (携带 TWR 时间戳)
+ * @param dst_short  目标地址 (Tag)
+ * @param seq        帧序号
+ * @param rx_ts      Anchor 收到 DISC_REQ 的 RX 时间戳 (40-bit DW1000 格式)
+ * @param tx_ts      Anchor 预计算的 TX 时间戳 (40-bit DW1000 格式)
  * @return 帧长度, 0=失败
  */
-static uint16_t build_fast_reply_ack(uint16_t dst_short, uint8_t seq)
+static uint16_t build_fast_reply_ack(uint16_t dst_short, uint8_t seq,
+                                      uint64_t rx_ts, uint64_t tx_ts)
 {
     UwbProtocolFrame frame;
     UwbProtocol_InitFrame(&frame,
@@ -161,8 +166,16 @@ static uint16_t build_fast_reply_ack(uint16_t dst_short, uint8_t seq)
                           dst_short,
                           seq,
                           UWB_FUNC_DISCOVERY_RESP);
-    frame.common.ext_header_len = 0;
+
+    /* 携带 TWR 时间戳: rx_ts(5B) + tx_ts(5B) = 10 字节 */
+    frame.common.ext_header_len = 10U;
     frame.common.payload_len    = 0;
+
+    UwbProtocol_WriteLe32(&frame.ext_header[0], (uint32_t)(rx_ts & 0xFFFFFFFF));
+    frame.ext_header[4] = (uint8_t)(rx_ts >> 32);
+
+    UwbProtocol_WriteLe32(&frame.ext_header[5], (uint32_t)(tx_ts & 0xFFFFFFFF));
+    frame.ext_header[9] = (uint8_t)(tx_ts >> 32);
 
     size_t tx_len = 0;
     if (!UwbProtocol_Encode(&frame, g_phy.tx_buf,
@@ -239,15 +252,18 @@ static void irq_rx_ok(uint32_t status)
 
         uint8_t assigned_slot = (g_phy.short_addr - ANCHOR_ADDR_BASE) % DISC_RX_SLOT_COUNT;
 
-        g_phy.tx_buf_len = build_fast_reply_ack(frame.mac.src16, frame.mac.seq);
+        /* ★ 先计算延迟发送时间 (低9位清零对齐, 匹配 DW1000 delayed TX 精度) */
+        uint64_t rx_ts    = s->rx_ts;
+        uint32_t delay_us = ANCHOR_REPLY_GUARD_US + assigned_slot * DISC_SLOT_WIDTH_US;
+        uint64_t tx_time  = (rx_ts + UwbPhy_UsToDwTime(delay_us)) & ~((1ULL << 9) - 1ULL);
+
+        /* ★ 再构建帧 (携带 rx_ts 和 tx_time) */
+        g_phy.tx_buf_len = build_fast_reply_ack(frame.mac.src16, frame.mac.seq,
+                                                 rx_ts, tx_time);
         if (g_phy.tx_buf_len > 0) {
             dwt_writetxdata(g_phy.tx_buf_len + 2U, g_phy.tx_buf, 0);
             dwt_writetxfctrl(g_phy.tx_buf_len + 2U, 0);
 
-            /* DELAYED TX: 基于 RX 时间戳的精确槽对齐 */
-            uint64_t rx_ts    = s->rx_ts;
-            uint32_t delay_us = ANCHOR_REPLY_GUARD_US + assigned_slot * DISC_SLOT_WIDTH_US;
-            uint64_t tx_time  = rx_ts + UwbPhy_UsToDwTime(delay_us);
             dwt_setdelayedtrxtime((uint32_t)(tx_time >> 8));
             int ret = dwt_starttx(DWT_START_TX_DELAYED);
 
@@ -545,10 +561,11 @@ static void run_state_machine(void)
                         break;
                     }
 
-                    /* 填 TX 时间戳到 slot */
+                    /* 填 TX 时间戳到 slot, 并携带到事件中 */
+                    uint64_t tx_ts = UwbPhy_ReadTxTimestamp();
                     uwb_slot_t *s = UwbSlots_Get(g_phy.tx_slot);
                     if (s != NULL) {
-                        s->tx_ts = UwbPhy_ReadTxTimestamp();
+                        s->tx_ts = tx_ts;
                     }
 
                     /* PHY 层直接回收 TX slot */
@@ -556,8 +573,8 @@ static void run_state_machine(void)
                         UwbSlots_Free(g_phy.tx_slot);
                     }
 
-                    /* 上报 TX_DONE (slot 已回收, index=-1) */
-                    phy_evt_t evt = {.type = PHY_EVT_TX_DONE, .slot_index = -1};
+                    /* 上报 TX_DONE, 携带 tx_ts */
+                    phy_evt_t evt = {.type = PHY_EVT_TX_DONE, .slot_index = -1, .tx_ts = tx_ts};
                     UwbBuffers_SendEvt(&evt, 0);
 
                     if (g_phy.pending_rx) {

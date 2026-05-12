@@ -41,6 +41,9 @@ typedef struct {
     uint8_t  seq;
     uint32_t last_disc_ms;
     int8_t   rx_slot_results[DISC_RX_SLOT_COUNT]; /* ★ 记录每槽结果 */
+    bool     disc_exchange_active;   /* 当前 DISC 交换进行中 */
+    uint64_t tag_tx_ts;              /* 最近一次 DISC_REQ 的 TX 时间戳 */
+    uint16_t tag_tx_window_id;       /* tag_tx_ts 对应的 window_id */
 } link_context_t;
 
 static link_context_t g_link;
@@ -97,19 +100,56 @@ static void drain_phy_events(void)
 
         switch (evt.type) {
             case PHY_EVT_TX_DONE:
+                /* 记录 Tag 发送 DISC_REQ 的 TX 时间戳 */
+                if (evt.tx_ts != 0) {
+                    g_link.tag_tx_ts = evt.tx_ts;
+                    g_link.tag_tx_window_id = g_link.window_id;
+                }
                 break;
 
             case PHY_EVT_RX_SLOT_DONE: {
                 if (evt.rx_seq < DISC_RX_SLOT_COUNT) {
                     g_link.rx_slot_results[evt.rx_seq] = evt.slot_index;
                 }
-                /* 有帧: 立即处理帧数据 + 回收物理 slot */
+                /* 有帧: 解析 DISC_RESP 并上报 APP 层 */
                 if (evt.slot_index >= 0) {
                     uwb_slot_t *s = UwbSlots_Get(evt.slot_index);
-                    if (s != NULL) {
-                        /* 按需处理帧数据 */
+                    if (s != NULL && s->frame_type == (uint8_t)UWB_FUNC_DISCOVERY_RESP) {
+                        /* 解析 Anchor 时间戳 */
+                        UwbProtocolFrame frame;
+                        if (UwbProtocol_Decode(&frame, s->data, s->data_len) &&
+                            frame.common.ext_header_len >= 10) {
+
+                            uint64_t anchor_rx_ts = UwbProtocol_ReadLe32(&frame.ext_header[0])
+                                                  | ((uint64_t)frame.ext_header[4] << 32);
+                            uint64_t anchor_tx_ts = UwbProtocol_ReadLe32(&frame.ext_header[5])
+                                                  | ((uint64_t)frame.ext_header[9] << 32);
+
+                            /* 组合 TWR 四时间戳 */
+                            UwbTwrExchange twr;
+                            memset(&twr, 0, sizeof(twr));
+                            twr.anchor_id    = s->src_short;
+                            twr.exchange_seq  = frame.mac.seq;
+                            twr.tag_tx_ts    = g_link.tag_tx_ts;
+                            twr.anchor_rx_ts = anchor_rx_ts;
+                            twr.anchor_tx_ts = anchor_tx_ts;
+                            twr.tag_rx_ts    = s->rx_ts;
+                            twr.quality      = s->quality;
+
+                            UwbLinkAppEvent app_evt;
+                            app_evt.type     = UWB_LINK_APP_EVT_TWR_EXCHANGE;
+                            app_evt.data.twr = twr;
+                            xQueueSend(g_app_evt_queue, &app_evt, 0);
+
+                            app_log_info("[LINK] TWR anchor=0x%04X t1=0x%02lX%08lX t2=0x%02lX%08lX t3=0x%02lX%08lX t4=0x%02lX%08lX",
+                                         twr.anchor_id,
+                                         (uint32_t)(twr.tag_tx_ts >> 32), (uint32_t)(twr.tag_tx_ts & 0xFFFFFFFF),
+                                         (uint32_t)(twr.anchor_rx_ts >> 32), (uint32_t)(twr.anchor_rx_ts & 0xFFFFFFFF),
+                                         (uint32_t)(twr.anchor_tx_ts >> 32), (uint32_t)(twr.anchor_tx_ts & 0xFFFFFFFF),
+                                         (uint32_t)(twr.tag_rx_ts >> 32), (uint32_t)(twr.tag_rx_ts & 0xFFFFFFFF));
+                        }
                     }
-                    UwbSlots_Free(evt.slot_index);  /* ★ 立即回收 */
+                    UwbSlots_Free(evt.slot_index);
                 }
                 break;
             }
@@ -127,6 +167,8 @@ static void drain_phy_events(void)
                 /* 重置 */
                 memset(g_link.rx_slot_results, -1,
                        sizeof(g_link.rx_slot_results));
+                /* DISC 交换完成, 允许下一次发送 */
+                g_link.disc_exchange_active = false;
                 break;
             }
 
@@ -155,13 +197,12 @@ static void drain_phy_events(void)
 /* ---- Tag: 发送 DISC_REQ (内含超时等待) ---- */
 static void link_tag_send_disc(void)
 {
-    uint32_t now = HAL_GetTick();
-    if ((now - g_link.last_disc_ms) < LINK_DISC_PERIOD_MS) {
+    /* DISC 交换进行中, 不打断 */
+    if (g_link.disc_exchange_active) {
         return;
     }
-    g_link.last_disc_ms = now;
 
-    app_log_info("[LINK] preparing DISC_REQ tick=%lu", (unsigned long)now);
+    app_log_info("[LINK] preparing DISC_REQ tick=%lu", (unsigned long)HAL_GetTick());
 
     /* 1. 分配 slot, 打包帧数据 */
     int8_t idx = UwbSlots_Alloc(UWB_SLOT_LINK_OWN);
@@ -201,6 +242,10 @@ static void link_tag_send_disc(void)
     app_log_info("[LINK] DISC_REQ win=%u seq=%u slot=%d",
                  g_link.window_id, (unsigned)(g_link.seq - 1), (int)idx);
 
+    /* ★ 标记交换进行中 */
+    g_link.disc_exchange_active = true;
+    g_link.tag_tx_ts            = 0;
+
     /* 3. 超时等待 PHY 完成 TX (slot 已交给 PHY, 由 PHY 回收)
      *    等到 TX_DONE/ERROR 事件, 或超时后放弃等待
      *    超时不需要回收 slot, PHY 层的看门狗会兜底 */
@@ -210,9 +255,14 @@ static void link_tag_send_disc(void)
         /* 处理 TX 结果事件 */
         switch (evt.type) {
             case PHY_EVT_TX_DONE:
+                if (evt.tx_ts != 0) {
+                    g_link.tag_tx_ts = evt.tx_ts;
+                    g_link.tag_tx_window_id = g_link.window_id;
+                }
                 break;
             case PHY_EVT_ERROR:
                 app_log_warn("[LINK] TX failed (slot recycled by PHY)");
+                g_link.disc_exchange_active = false;
                 break;
             case PHY_EVT_RX_SLOT_DONE: {
                 /* 在等待期间收到 RX 槽事件 */
@@ -220,6 +270,30 @@ static void link_tag_send_disc(void)
                     g_link.rx_slot_results[evt.rx_seq] = evt.slot_index;
                 }
                 if (evt.slot_index >= 0) {
+                    uwb_slot_t *rs = UwbSlots_Get(evt.slot_index);
+                    if (rs != NULL && rs->frame_type == (uint8_t)UWB_FUNC_DISCOVERY_RESP) {
+                        UwbProtocolFrame frame;
+                        if (UwbProtocol_Decode(&frame, rs->data, rs->data_len) &&
+                            frame.common.ext_header_len >= 10) {
+                            uint64_t anchor_rx_ts = UwbProtocol_ReadLe32(&frame.ext_header[0])
+                                                  | ((uint64_t)frame.ext_header[4] << 32);
+                            uint64_t anchor_tx_ts = UwbProtocol_ReadLe32(&frame.ext_header[5])
+                                                  | ((uint64_t)frame.ext_header[9] << 32);
+                            UwbTwrExchange twr;
+                            memset(&twr, 0, sizeof(twr));
+                            twr.anchor_id    = rs->src_short;
+                            twr.exchange_seq  = frame.mac.seq;
+                            twr.tag_tx_ts    = g_link.tag_tx_ts;
+                            twr.anchor_rx_ts = anchor_rx_ts;
+                            twr.anchor_tx_ts = anchor_tx_ts;
+                            twr.tag_rx_ts    = rs->rx_ts;
+                            twr.quality      = rs->quality;
+                            UwbLinkAppEvent app_evt;
+                            app_evt.type     = UWB_LINK_APP_EVT_TWR_EXCHANGE;
+                            app_evt.data.twr = twr;
+                            xQueueSend(g_app_evt_queue, &app_evt, 0);
+                        }
+                    }
                     UwbSlots_Free(evt.slot_index);
                 }
                 break;
@@ -235,6 +309,7 @@ static void link_tag_send_disc(void)
                              (int)g_link.rx_slot_results[3]);
                 memset(g_link.rx_slot_results, -1,
                        sizeof(g_link.rx_slot_results));
+                g_link.disc_exchange_active = false;
                 break;
             }
             case PHY_EVT_RX_FRAME: {
@@ -254,6 +329,7 @@ static void link_tag_send_disc(void)
     } else {
         app_log_warn("[LINK] TX timeout (%ums), slot owned by PHY",
                      (unsigned)LINK_TX_TIMEOUT_MS);
+        g_link.disc_exchange_active = false;
     }
 }
 
@@ -312,12 +388,12 @@ void UwbLink_Task(void *argument)
         /* 回收 PHY 事件 (非阻塞, 处理上一轮残留的 RX 事件等) */
         drain_phy_events();
 
-        /* Tag 定时发送 (内含 TX 超时等待) */
-        if (g_link.cfg.role == APP_ROLE_TAG) {
+        /* Tag 发送 DISC_REQ (交换完成后立即触发下一轮) */
+        if (g_link.cfg.role == APP_ROLE_TAG && !g_link.disc_exchange_active) {
             link_tag_send_disc();
         }
 
         /* Anchor 只需轮询等待 */
-        osDelay(LINK_POLL_TIMEOUT_MS);
+        osDelay(1);
     }
 }

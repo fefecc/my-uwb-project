@@ -53,6 +53,7 @@ typedef struct {
     phy_evt_type_t type;
     int8_t slot_index;         /* 物理 slot index, -1 = 无帧 */
     uint8_t rx_seq;            /* RX 时间槽序号 (0-3), 仅 RX_SLOT_DONE 有效 */
+    uint64_t tx_ts;            /* TX_DONE 时携带 TX 时间戳, 0=无效 */
 } phy_evt_t;
 
 /* ---- API ---- */

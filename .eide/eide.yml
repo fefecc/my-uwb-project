@@ -116,7 +116,7 @@ targets:
         otherCmds: ""
         speed: 4M
         targetName: cortex_m
-    uploader: OpenOCD
+    uploader: JLink
   Release:
     cppPreprocessAttrs:
       defineList:
