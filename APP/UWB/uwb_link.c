@@ -1,12 +1,12 @@
 /**
  * @file uwb_link.c
- * @brief LINK 层 (V4 极简版) - Tag 定时发 DISC_REQ, PHY 负责回收 TX slot
+ * @brief LINK 层 (V4 极简版) - Tag 定时发 DISC_REQ, TX slot 由 LINK 管理生命周期
  *
  * 流程:
  *   1. LINK 分配 slot, 打包 DISC_REQ 帧数据
  *   2. 通过 cmd_queue 发送 slot_index 给 PHY
  *   3. 阻塞等待 PHY 的 TX_DONE/ERROR 事件 (带超时保护)
- *   4. TX slot 由 PHY 层回收, LINK 只处理事件通知
+ *   4. PHY 在 TX_DONE 中返回 slot_index, LINK 从中读取 tx_ts 用于 TWR 计算
  *   5. RX slot 仍由 LINK 回收 (需要读取帧数据做业务处理)
  *   6. Anchor: 只回收 PHY 上报的 RX slot (快速应答由 PHY 自动完成)
  *
@@ -42,8 +42,7 @@ typedef struct {
     uint32_t last_disc_ms;
     int8_t   rx_slot_results[DISC_RX_SLOT_COUNT]; /* ★ 记录每槽结果 */
     bool     disc_exchange_active;   /* 当前 DISC 交换进行中 */
-    uint64_t tag_tx_ts;              /* 最近一次 DISC_REQ 的 TX 时间戳 */
-    uint16_t tag_tx_window_id;       /* tag_tx_ts 对应的 window_id */
+    int8_t   tx_slot_idx;           /* TX slot 索引, LINK 管理生命周期, 读取 tx_ts */
 } link_context_t;
 
 static link_context_t g_link;
@@ -100,10 +99,9 @@ static void drain_phy_events(void)
 
         switch (evt.type) {
             case PHY_EVT_TX_DONE:
-                /* 记录 Tag 发送 DISC_REQ 的 TX 时间戳 */
-                if (evt.tx_ts != 0) {
-                    g_link.tag_tx_ts = evt.tx_ts;
-                    g_link.tag_tx_window_id = g_link.window_id;
+                /* 记录 TX slot 索引, 后续从 slot 读取 tx_ts */
+                if (evt.slot_index >= 0) {
+                    g_link.tx_slot_idx = evt.slot_index;
                 }
                 break;
 
@@ -130,7 +128,10 @@ static void drain_phy_events(void)
                             memset(&twr, 0, sizeof(twr));
                             twr.anchor_id    = s->src_short;
                             twr.exchange_seq  = frame.mac.seq;
-                            twr.tag_tx_ts    = g_link.tag_tx_ts;
+                            {
+                                uwb_slot_t *tx_slot = UwbSlots_Get(g_link.tx_slot_idx);
+                                twr.tag_tx_ts = (tx_slot != NULL) ? tx_slot->tx_ts : 0;
+                            }
                             twr.anchor_rx_ts = anchor_rx_ts;
                             twr.anchor_tx_ts = anchor_tx_ts;
                             twr.tag_rx_ts    = s->rx_ts;
@@ -167,6 +168,11 @@ static void drain_phy_events(void)
                 /* 重置 */
                 memset(g_link.rx_slot_results, -1,
                        sizeof(g_link.rx_slot_results));
+                /* 释放 TX slot, 交换完成 */
+                if (g_link.tx_slot_idx >= 0) {
+                    UwbSlots_Free(g_link.tx_slot_idx);
+                    g_link.tx_slot_idx = -1;
+                }
                 /* DISC 交换完成, 允许下一次发送 */
                 g_link.disc_exchange_active = false;
                 break;
@@ -189,6 +195,11 @@ static void drain_phy_events(void)
 
             case PHY_EVT_ERROR:
                 app_log_warn("[LINK] PHY_ERROR");
+                if (g_link.tx_slot_idx >= 0) {
+                    UwbSlots_Free(g_link.tx_slot_idx);
+                    g_link.tx_slot_idx = -1;
+                }
+                g_link.disc_exchange_active = false;
                 break;
         }
     }
@@ -244,7 +255,7 @@ static void link_tag_send_disc(void)
 
     /* ★ 标记交换进行中 */
     g_link.disc_exchange_active = true;
-    g_link.tag_tx_ts            = 0;
+    g_link.tx_slot_idx            = -1;
 
     /* 3. 超时等待 PHY 完成 TX (slot 已交给 PHY, 由 PHY 回收)
      *    等到 TX_DONE/ERROR 事件, 或超时后放弃等待
@@ -255,13 +266,16 @@ static void link_tag_send_disc(void)
         /* 处理 TX 结果事件 */
         switch (evt.type) {
             case PHY_EVT_TX_DONE:
-                if (evt.tx_ts != 0) {
-                    g_link.tag_tx_ts = evt.tx_ts;
-                    g_link.tag_tx_window_id = g_link.window_id;
+                if (evt.slot_index >= 0) {
+                    g_link.tx_slot_idx = evt.slot_index;
                 }
                 break;
             case PHY_EVT_ERROR:
                 app_log_warn("[LINK] TX failed (slot recycled by PHY)");
+                if (g_link.tx_slot_idx >= 0) {
+                    UwbSlots_Free(g_link.tx_slot_idx);
+                    g_link.tx_slot_idx = -1;
+                }
                 g_link.disc_exchange_active = false;
                 break;
             case PHY_EVT_RX_SLOT_DONE: {
@@ -283,7 +297,10 @@ static void link_tag_send_disc(void)
                             memset(&twr, 0, sizeof(twr));
                             twr.anchor_id    = rs->src_short;
                             twr.exchange_seq  = frame.mac.seq;
-                            twr.tag_tx_ts    = g_link.tag_tx_ts;
+                            {
+                                uwb_slot_t *tx_slot = UwbSlots_Get(g_link.tx_slot_idx);
+                                twr.tag_tx_ts = (tx_slot != NULL) ? tx_slot->tx_ts : 0;
+                            }
                             twr.anchor_rx_ts = anchor_rx_ts;
                             twr.anchor_tx_ts = anchor_tx_ts;
                             twr.tag_rx_ts    = rs->rx_ts;
@@ -309,6 +326,10 @@ static void link_tag_send_disc(void)
                              (int)g_link.rx_slot_results[3]);
                 memset(g_link.rx_slot_results, -1,
                        sizeof(g_link.rx_slot_results));
+                if (g_link.tx_slot_idx >= 0) {
+                    UwbSlots_Free(g_link.tx_slot_idx);
+                    g_link.tx_slot_idx = -1;
+                }
                 g_link.disc_exchange_active = false;
                 break;
             }
@@ -329,6 +350,10 @@ static void link_tag_send_disc(void)
     } else {
         app_log_warn("[LINK] TX timeout (%ums), slot owned by PHY",
                      (unsigned)LINK_TX_TIMEOUT_MS);
+        if (g_link.tx_slot_idx >= 0) {
+            UwbSlots_Free(g_link.tx_slot_idx);
+            g_link.tx_slot_idx = -1;
+        }
         g_link.disc_exchange_active = false;
     }
 }
@@ -356,6 +381,7 @@ bool UwbLink_Init(const UwbStackConfig *cfg)
 
     memset(&g_link, 0, sizeof(g_link));
     g_link.cfg = *cfg;
+    g_link.tx_slot_idx = -1;
     memset(g_link.rx_slot_results, -1, sizeof(g_link.rx_slot_results));
 
     /* 创建 LINK→APP 事件队列 */

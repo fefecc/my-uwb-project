@@ -561,20 +561,18 @@ static void run_state_machine(void)
                         break;
                     }
 
-                    /* 填 TX 时间戳到 slot, 并携带到事件中 */
+                    /* 填 TX 时间戳到 slot，PHY 不回收，交给 LINK 层管理生命周期 */
                     uint64_t tx_ts = UwbPhy_ReadTxTimestamp();
                     uwb_slot_t *s = UwbSlots_Get(g_phy.tx_slot);
                     if (s != NULL) {
                         s->tx_ts = tx_ts;
                     }
 
-                    /* PHY 层直接回收 TX slot */
-                    if (g_phy.tx_slot >= 0) {
-                        UwbSlots_Free(g_phy.tx_slot);
-                    }
+                    int8_t tx_slot_idx = g_phy.tx_slot;
+                    g_phy.tx_slot = -1;
 
-                    /* 上报 TX_DONE, 携带 tx_ts */
-                    phy_evt_t evt = {.type = PHY_EVT_TX_DONE, .slot_index = -1, .tx_ts = tx_ts};
+                    /* 上报 TX_DONE, 携带 slot_index 供 LINK 读取 tx_ts */
+                    phy_evt_t evt = {.type = PHY_EVT_TX_DONE, .slot_index = tx_slot_idx, .tx_ts = tx_ts};
                     UwbBuffers_SendEvt(&evt, 0);
 
                     if (g_phy.pending_rx) {
