@@ -54,6 +54,9 @@ bool UwbStack_StartFromConfig(void)
     UwbBuffers_Init();
     UwbSlots_Init();
 
+    /* plan-v4: APP→LINK 命令队列 (数据帧暂未启用) */
+    UwbLinkCmd_Init();
+
     if (!UwbPhy_InitWithConfig(cfg.pan_id, cfg.short_addr,
                                cfg.role, &cfg) ||
         !UwbLink_Init(&cfg) || !UwbApp_Init(&cfg)) {

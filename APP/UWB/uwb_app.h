@@ -2,9 +2,11 @@
 #define APP_UWB_UWB_APP_H_
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "cmsis_os2.h"
 #include "uwb_stack_types.h"
+#include "uwb_link.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -22,13 +22,14 @@
 extern "C" {
 #endif
 
-#define UWB_SLOT_NUM       8
+#define UWB_SLOT_NUM       16
 #define UWB_SLOT_DATA_SIZE UWB_STACK_MAX_FRAME_LEN
 
 typedef enum {
     UWB_SLOT_FREE = 0,
     UWB_SLOT_LINK_OWN,
     UWB_SLOT_PHY_OWN,
+    UWB_SLOT_APP_OWN,
 } uwb_slot_owner_t;
 
 typedef struct {
@@ -42,6 +43,10 @@ typedef struct {
     uint16_t window_id;
     uint8_t  frame_type;
     uint16_t src_short;
+    uint16_t session_id;     /* plan-v4: 数据会话号 */
+    uint8_t  frag_id;        /* plan-v4: 分片序号 */
+    uint8_t  total_frags;    /* plan-v4: 总分片数 */
+    uint8_t  data_flags;     /* plan-v4: DATA_FRAG flags */
     uint64_t rx_ts;
     uint64_t tx_ts;
 

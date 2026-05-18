@@ -22,6 +22,10 @@
 #include "../service/time_service.h"
 #include "main.h"
 
+/* LINK/PHY 调试日志会明显影响串口吞吐；默认只输出 START 和 WARN/ERROR。 */
+#undef app_log_info
+#define app_log_info(...) do { if (0) LogService_Write(APP_LOG_INFO, __VA_ARGS__); } while (0)
+
 /* ---- 状态/中断 清除掩码 ---- */
 #define PHY_STATUS_CLEAR_MASK                     \
     (SYS_STATUS_ALL_TX | SYS_STATUS_ALL_RX_GOOD | \
@@ -61,6 +65,7 @@ typedef struct {
     uint8_t tx_buf[UWB_STACK_MAX_FRAME_LEN];
     uint16_t tx_buf_len;
     bool fast_reply_active;
+    bool fast_reply_is_data;   /* true=数据帧应答, false=DISC应答 */
 
     /* RX slot 状态 */
     int8_t rx_slot;
@@ -78,6 +83,13 @@ typedef struct {
 
     /* 帧协议配置 (Anchor 快速应答用) */
     UwbStackConfig stack_cfg;
+
+    /* plan-v4 数据会话跟踪 (Anchor 侧) */
+    uint16_t data_session_id;      /* 从 CFG_REQ 提取, 0=无会话 */
+    uint8_t  data_expected_frag;   /* 期望的下一个 frag_id */
+    uint8_t  data_last_sent_frag;  /* 上一次已发送的 frag_id */
+    int8_t   data_pending_slot;    /* PHY 挂起表 slot, -1=空 */
+    bool     data_error_pending;   /* LINK 下发的错误标记 */
 } phy_context_t;
 
 static phy_context_t g_phy;
@@ -185,6 +197,254 @@ static uint16_t build_fast_reply_ack(uint16_t dst_short, uint8_t seq,
     return (uint16_t)tx_len;
 }
 
+/**
+ * @brief 构建 DATA_CTRL_RESP 快速应答帧 (ACK/WAIT/ERROR)
+ * @param dst_short  目标地址 (Tag)
+ * @param seq        帧序号
+ * @param resp_type  应答类型 (UWB_DATA_RESP_ACK/WAIT/STOP/ERROR)
+ * @param extra      附加字节 (如 total_frags), 0=无
+ * @return 帧长度, 0=失败
+ */
+static uint16_t build_fast_reply_data_ack(uint16_t dst_short, uint8_t seq,
+                                           uint8_t resp_type, uint8_t extra)
+{
+    UwbProtocolFrame frame;
+    UwbProtocol_InitFrame(&frame,
+                          &g_phy.stack_cfg,
+                          dst_short,
+                          seq,
+                          UWB_FUNC_APP_DATA_CTRL_RESP);
+
+    frame.common.ext_header_len = 2U;
+    frame.ext_header[0] = resp_type;
+    frame.ext_header[1] = extra;
+    frame.common.payload_len = 0;
+
+    size_t tx_len = 0;
+    if (!UwbProtocol_Encode(&frame, g_phy.tx_buf,
+                            sizeof(g_phy.tx_buf), &tx_len)) {
+        return 0;
+    }
+    return (uint16_t)tx_len;
+}
+
+/* ---- 数据帧快速应答发送 ---- */
+
+static bool send_delayed_reply(uint16_t len, uint64_t rx_ts, uint32_t delay_us)
+{
+    uint64_t tx_time = (rx_ts + UwbPhy_UsToDwTime(delay_us)) & ~((1ULL << 9) - 1ULL);
+
+    dwt_writetxdata(len + 2U, g_phy.tx_buf, 0);
+    dwt_writetxfctrl(len + 2U, 0);
+    dwt_setdelayedtrxtime((uint32_t)(tx_time >> 8));
+
+    if (dwt_starttx(DWT_START_TX_DELAYED) != 0) {
+        return false;
+    }
+
+    g_phy.fast_reply_active = true;
+    g_phy.fast_reply_is_data = true;
+    g_phy.state = UWB_PHY_ST_TX;
+    g_phy.step  = UWB_PHY_STEP_WAIT;
+    g_phy.tx_slot = -1;
+    g_phy.pending_rx = false;
+    return true;
+}
+
+static void build_and_send_wait_response(uint16_t dst16, uint8_t seq,
+                                          uint64_t rx_ts)
+{
+    g_phy.tx_buf_len = build_fast_reply_data_ack(dst16, seq,
+                                                  UWB_DATA_RESP_WAIT, 0);
+    if (g_phy.tx_buf_len > 0 &&
+        send_delayed_reply(g_phy.tx_buf_len, rx_ts,
+                           ANCHOR_REPLY_GUARD_US)) {
+        app_log_info("[PHY] TX_STARTED fast_reply[data] WAIT");
+    }
+}
+
+static void build_and_send_error_response(uint16_t dst16, uint8_t seq,
+                                           uint64_t rx_ts)
+{
+    g_phy.tx_buf_len = build_fast_reply_data_ack(dst16, seq,
+                                                  UWB_DATA_RESP_ERROR, 0);
+    if (g_phy.tx_buf_len > 0 &&
+        send_delayed_reply(g_phy.tx_buf_len, rx_ts,
+                           ANCHOR_REPLY_GUARD_US)) {
+        app_log_info("[PHY] TX_STARTED fast_reply[data] ERROR");
+    }
+    g_phy.data_error_pending = false;
+}
+
+/* ---- 从 PHY 挂起表发送预载帧 ---- */
+
+static void send_pending_frag_as_reply(uint64_t rx_ts)
+{
+    if (g_phy.data_pending_slot < 0) return;
+
+    uwb_slot_t *s = UwbSlots_Get(g_phy.data_pending_slot);
+    if (s == NULL) {
+        g_phy.data_pending_slot = -1;
+        return;
+    }
+
+    uint64_t tx_time = (rx_ts + UwbPhy_UsToDwTime(ANCHOR_REPLY_GUARD_US))
+                       & ~((1ULL << 9) - 1ULL);
+
+    dwt_writetxdata(s->data_len + 2U, s->data, 0);
+    dwt_writetxfctrl(s->data_len + 2U, 0);
+    dwt_setdelayedtrxtime((uint32_t)(tx_time >> 8));
+
+    if (dwt_starttx(DWT_START_TX_DELAYED) == 0) {
+        g_phy.fast_reply_active = true;
+        g_phy.fast_reply_is_data = true;
+        g_phy.state = UWB_PHY_ST_TX;
+        g_phy.step  = UWB_PHY_STEP_WAIT;
+        g_phy.tx_slot = g_phy.data_pending_slot;
+        g_phy.pending_rx = false;
+        g_phy.data_last_sent_frag = s->frag_id;
+        app_log_info("[PHY] TX_STARTED fast_reply[data] frag=%u",
+                     (unsigned)s->frag_id);
+    } else {
+        app_log_warn("[PHY] pending frag TX_FAIL");
+    }
+}
+
+static bool pending_frag_matches(uint16_t session_id, uint8_t frag_id)
+{
+    if (g_phy.data_pending_slot < 0) return false;
+
+    uwb_slot_t *s = UwbSlots_Get(g_phy.data_pending_slot);
+    if (s == NULL || s->owner == UWB_SLOT_FREE) return false;
+
+    return s->session_id == session_id && s->frag_id == frag_id;
+}
+
+static void forward_data_ctrl_to_link(int8_t rx_slot_idx)
+{
+    phy_evt_t rx_evt = {.type       = PHY_EVT_RX_FRAME,
+                        .slot_index = rx_slot_idx};
+    UwbBuffers_SendEvt(&rx_evt, 0);
+}
+
+static void clear_data_context(void)
+{
+    g_phy.data_session_id = 0;
+    g_phy.data_expected_frag = 0;
+    g_phy.data_last_sent_frag = 0;
+    g_phy.data_error_pending = false;
+}
+
+/* ---- Anchor 处理 DATA_CTRL 帧 ---- */
+
+static void phy_handle_data_frame(uwb_slot_t *s, int8_t rx_slot_idx)
+{
+    UwbProtocolFrame frame;
+    if (!UwbProtocol_Decode(&frame, s->data, s->data_len)) {
+        UwbSlots_Free(rx_slot_idx);
+        enter_listening();
+        return;
+    }
+
+    if (frame.common.ext_header_len < 3) {
+        UwbSlots_Free(rx_slot_idx);
+        enter_listening();
+        return;
+    }
+
+    uint16_t session_id = UwbProtocol_ReadLe16(&frame.ext_header[0]);
+    uint8_t  ctrl_type  = frame.ext_header[2];
+    uint8_t  frag_id    = (frame.common.ext_header_len >= 4) ? frame.ext_header[3] : 0;
+    uint16_t src16      = frame.mac.src16;
+    uint8_t  seq        = frame.mac.seq;
+
+    /* 错误标记检查 */
+    if (g_phy.data_error_pending) {
+        app_log_warn("[PHY] DATA_ERROR_FLAG src=0x%04X sess=0x%04X ctrl=%u frag=%u",
+                     src16, session_id, (unsigned)ctrl_type, (unsigned)frag_id);
+        build_and_send_error_response(src16, seq, s->rx_ts);
+        UwbSlots_Free(rx_slot_idx);
+        if (!g_phy.fast_reply_active) enter_listening();
+        return;
+    }
+
+    /* DONE/STOP: 快速 ACK, 同时把事件交给 APP 做业务清理 */
+    if (ctrl_type == UWB_DATA_CTRL_DONE || ctrl_type == UWB_DATA_CTRL_STOP) {
+        app_log_info("[PHY] DATA_CTRL_DONE src=0x%04X sess=0x%04X ctrl=%u",
+                     src16, session_id, (unsigned)ctrl_type);
+        g_phy.data_session_id    = 0;
+        g_phy.data_expected_frag = 0;
+        g_phy.data_last_sent_frag = 0;
+        if (g_phy.data_pending_slot >= 0) {
+            UwbSlots_Free(g_phy.data_pending_slot);
+            g_phy.data_pending_slot = -1;
+        }
+        /* 发 ACK 确认 */
+        g_phy.tx_buf_len = build_fast_reply_data_ack(src16, seq,
+                                                      UWB_DATA_RESP_ACK, 0);
+        if (g_phy.tx_buf_len > 0 &&
+            send_delayed_reply(g_phy.tx_buf_len, s->rx_ts,
+                               ANCHOR_REPLY_GUARD_US)) {
+            app_log_info("[PHY] TX_STARTED fast_reply[data] DONE/STOP_ACK");
+        }
+        forward_data_ctrl_to_link(rx_slot_idx);
+        if (!g_phy.fast_reply_active) enter_listening();
+        return;
+    }
+
+    /* GET_INFO: frag_id=0 的 meta 拉取。pending 未就绪时先 WAIT, APP 收到事件后准备。 */
+    if (ctrl_type == UWB_DATA_CTRL_GET_INFO) {
+        if (pending_frag_matches(session_id, 0)) {
+            app_log_info("[PHY] DATA_PENDING_HIT GET_INFO src=0x%04X sess=0x%04X slot=%d",
+                         src16, session_id, (int)g_phy.data_pending_slot);
+            send_pending_frag_as_reply(s->rx_ts);
+            UwbSlots_Free(rx_slot_idx);
+        } else {
+            app_log_info("[PHY] DATA_PENDING_MISS GET_INFO src=0x%04X sess=0x%04X",
+                         src16, session_id);
+            build_and_send_wait_response(src16, seq, s->rx_ts);
+            forward_data_ctrl_to_link(rx_slot_idx);
+        }
+        if (!g_phy.fast_reply_active) enter_listening();
+        return;
+    }
+
+    /* PULL: pending 匹配则 delayed TX, 否则 WAIT 并通知 LINK/APP 准备。 */
+    if (ctrl_type == UWB_DATA_CTRL_PULL) {
+        /* session_id 校验 */
+        if (session_id != g_phy.data_session_id) {
+            app_log_warn("[PHY] DATA_SESSION_MISMATCH src=0x%04X got=0x%04X expect=0x%04X frag=%u",
+                         src16, session_id, g_phy.data_session_id,
+                         (unsigned)frag_id);
+            build_and_send_error_response(src16, seq, s->rx_ts);
+            UwbSlots_Free(rx_slot_idx);
+            if (!g_phy.fast_reply_active) enter_listening();
+            return;
+        }
+
+        if (pending_frag_matches(session_id, frag_id)) {
+            app_log_info("[PHY] DATA_PENDING_HIT PULL src=0x%04X sess=0x%04X frag=%u slot=%d",
+                         src16, session_id, (unsigned)frag_id,
+                         (int)g_phy.data_pending_slot);
+            send_pending_frag_as_reply(s->rx_ts);
+            g_phy.data_expected_frag = frag_id + 1;
+            UwbSlots_Free(rx_slot_idx);
+        } else {
+            app_log_info("[PHY] DATA_PENDING_MISS PULL src=0x%04X sess=0x%04X frag=%u",
+                         src16, session_id, (unsigned)frag_id);
+            build_and_send_wait_response(src16, seq, s->rx_ts);
+            forward_data_ctrl_to_link(rx_slot_idx);
+        }
+
+        if (!g_phy.fast_reply_active) enter_listening();
+        return;
+    }
+
+    /* 未知 ctrl_type */
+    UwbSlots_Free(rx_slot_idx);
+    enter_listening();
+}
+
 static void irq_rx_ok(uint32_t status)
 {
     /* PHY 层零日志原则: 不打逐帧日志, 由 LINK 汇总 */
@@ -269,7 +529,8 @@ static void irq_rx_ok(uint32_t status)
 
             if (ret == 0) {
                 g_phy.fast_reply_active = true;
-                app_log_info("[PHY] TX_STARTED fast_reply slot=%u ",
+                g_phy.fast_reply_is_data = false;
+                app_log_info("[PHY] TX_STARTED fast_reply[disc] slot=%u ",
                              (unsigned)assigned_slot);
                 /* 先上报 RX 事件, 然后等 TX_DONE */
                 phy_evt_t rx_evt = {.type       = PHY_EVT_RX_FRAME,
@@ -290,6 +551,75 @@ static void irq_rx_ok(uint32_t status)
 
     /* ---- IDLE 状态下收帧: 直接上报 + re-listen ---- */
     if (g_phy.state == UWB_PHY_ST_IDLE) {
+
+        /* ★ plan-v4: Anchor DATA_CFG_REQ 快速应答 */
+        if (g_phy.role == APP_ROLE_ANCHOR &&
+            frame.common.func_code == (uint8_t)UWB_FUNC_APP_DATA_CFG) {
+
+            /* 修复1: 检查 fast_reply_active, 防止覆盖 DISC_RESP */
+            if (g_phy.fast_reply_active) {
+                phy_evt_t evt = {.type       = PHY_EVT_RX_FRAME,
+                                 .slot_index = g_phy.rx_slot};
+                UwbBuffers_SendEvt(&evt, 0);
+                g_phy.rx_slot      = -1;
+                g_phy.rx_got_frame = false;
+                enter_listening();
+                return;
+            }
+
+            UwbProtocolFrame cfg_frame;
+            if (UwbProtocol_Decode(&cfg_frame, s->data, s->data_len) &&
+                cfg_frame.common.ext_header_len >= 2) {
+
+                uint16_t new_session = UwbProtocol_ReadLe16(&cfg_frame.ext_header[0]);
+
+                /* 会话冲突检测 */
+                if (g_phy.data_session_id != 0) {
+                    build_and_send_error_response(frame.mac.src16,
+                                                  frame.mac.seq, s->rx_ts);
+                    UwbSlots_Free(g_phy.rx_slot);
+                    g_phy.rx_slot      = -1;
+                    g_phy.rx_got_frame = false;
+                    if (!g_phy.fast_reply_active) enter_listening();
+                    return;
+                }
+
+                /* 新会话 */
+                g_phy.data_session_id    = new_session;
+                g_phy.data_expected_frag = 1;
+                g_phy.data_last_sent_frag = 0;
+
+                g_phy.tx_buf_len = build_fast_reply_data_ack(
+                    frame.mac.src16, frame.mac.seq, UWB_DATA_RESP_ACK, 0);
+                if (g_phy.tx_buf_len > 0 &&
+                    send_delayed_reply(g_phy.tx_buf_len, s->rx_ts,
+                                       ANCHOR_REPLY_GUARD_US)) {
+                    app_log_info("[PHY] TX_STARTED fast_reply[data] CFG_ACK sess=0x%04X",
+                                 (unsigned)new_session);
+                }
+
+                /* 上报 RX 事件给 LINK/APP */
+                phy_evt_t rx_evt = {.type       = PHY_EVT_RX_FRAME,
+                                    .slot_index = g_phy.rx_slot};
+                UwbBuffers_SendEvt(&rx_evt, 0);
+                g_phy.rx_slot      = -1;
+                g_phy.rx_got_frame = false;
+                if (!g_phy.fast_reply_active) enter_listening();
+                return;
+            }
+        }
+
+        /* ★ plan-v4: Anchor DATA_CTRL 处理 */
+        if (g_phy.role == APP_ROLE_ANCHOR &&
+            frame.common.func_code == (uint8_t)UWB_FUNC_APP_DATA_CTRL) {
+
+            int8_t rslot = g_phy.rx_slot;
+            g_phy.rx_slot      = -1;
+            g_phy.rx_got_frame = false;
+            phy_handle_data_frame(s, rslot);
+            return;
+        }
+
         phy_evt_t evt = {.type       = PHY_EVT_RX_FRAME,
                          .slot_index = g_phy.rx_slot};
         UwbBuffers_SendEvt(&evt, 0);
@@ -471,11 +801,44 @@ static void process_cmd(void)
             case PHY_CMD_RESET:
                 app_log_info("[PHY] CMD_RESET");
                 dwt_forcetrxoff();
+                if (g_phy.data_pending_slot >= 0) {
+                    UwbSlots_Free(g_phy.data_pending_slot);
+                    g_phy.data_pending_slot = -1;
+                }
+                clear_data_context();
                 enter_listening();
                 break;
 
             case PHY_CMD_ENTER_LISTEN:
                 enter_listening();
+                break;
+
+            case PHY_CMD_SET_ERROR_FLAG:
+                g_phy.data_error_pending = true;
+                break;
+
+            case PHY_CMD_LOAD_PENDING:
+                if (cmd.slot_index >= 0) {
+                    /* 释放旧挂起帧 */
+                    if (g_phy.data_pending_slot >= 0) {
+                        UwbSlots_Free(g_phy.data_pending_slot);
+                    }
+                    /* ★ 修复2: 将 slot owner 改为 PHY_OWN */
+                    uwb_slot_t *ps = UwbSlots_Get(cmd.slot_index);
+                    if (ps != NULL) {
+                        ps->owner = UWB_SLOT_PHY_OWN;
+                    }
+                    g_phy.data_pending_slot = cmd.slot_index;
+                    app_log_info("[PHY] LOAD_PENDING slot=%d frag=%u",
+                                 (int)cmd.slot_index, (unsigned)cmd.frag_id);
+                } else {
+                    /* 清除挂起表 */
+                    if (g_phy.data_pending_slot >= 0) {
+                        UwbSlots_Free(g_phy.data_pending_slot);
+                        g_phy.data_pending_slot = -1;
+                    }
+                    clear_data_context();
+                }
                 break;
         }
     }
@@ -552,10 +915,27 @@ static void run_state_machine(void)
                     /* 快速应答完成: 只需读 TX 时间戳并 re-listen */
                     if (g_phy.fast_reply_active) {
                         uint64_t tx_ts = UwbPhy_ReadTxTimestamp();
-                        app_log_info("[LINK] fast_reply=1 tx=0x%02lX%08lX",
+                        int8_t sent_slot = g_phy.tx_slot;
+                        const char *tag = g_phy.fast_reply_is_data ? "data" : "disc";
+                        app_log_info("[PHY] fast_reply[%s] tx=0x%02lX%08lX",
+                                     tag,
                                      (uint32_t)(tx_ts >> 32),
                                      (uint32_t)(tx_ts & 0xFFFFFFFF));
+                        if (g_phy.fast_reply_is_data && sent_slot >= 0) {
+                            uwb_slot_t *sent = UwbSlots_Get(sent_slot);
+                            if (sent != NULL) {
+                                sent->tx_ts = tx_ts;
+                                phy_evt_t evt = {
+                                    .type = PHY_EVT_DATA_SENT,
+                                    .slot_index = sent_slot,
+                                    .frag_id = sent->frag_id,
+                                    .tx_ts = tx_ts,
+                                };
+                                (void)UwbBuffers_SendEvt(&evt, 0);
+                            }
+                        }
                         g_phy.fast_reply_active = false;
+                        g_phy.fast_reply_is_data = false;
                         g_phy.tx_slot           = -1;
                         enter_listening();
                         break;
@@ -683,6 +1063,7 @@ bool UwbPhy_InitWithConfig(uint16_t pan_id, uint16_t short_addr,
     g_phy.role       = role;
     g_phy.tx_slot    = -1;
     g_phy.rx_slot    = -1;
+    g_phy.data_pending_slot = -1;
     g_phy.state      = UWB_PHY_ST_IDLE;
     g_phy.step       = UWB_PHY_STEP_PREPARE;
     if (stack_cfg != NULL) {
@@ -722,8 +1103,8 @@ void UwbPhy_Task(void *argument)
     (void)argument;
 
     g_phy_task = xTaskGetCurrentTaskHandle();
-    app_log_info("[PHY] START short=0x%04X role=%u",
-                 g_phy.short_addr, (unsigned)g_phy.role);
+    LogService_Write(APP_LOG_INFO, "[PHY] START short=0x%04X role=%u",
+                     g_phy.short_addr, (unsigned)g_phy.role);
 
     enter_listening();
 

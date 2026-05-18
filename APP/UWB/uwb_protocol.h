@@ -25,7 +25,29 @@ typedef enum {
     UWB_FUNC_APP_DATA_CFG   = 0x70,
     UWB_FUNC_APP_DATA_FRAG  = 0x71,
     UWB_FUNC_APP_DATA_CTRL  = 0x72,
+    UWB_FUNC_APP_DATA_CTRL_RESP = 0x73,
 } UwbFuncCode;
+
+/* ====== plan-v4 数据交互帧常量 ====== */
+
+/* DATA_CTRL 子类型 (ext_header 中 ctrl_type 字段) */
+#define UWB_DATA_CTRL_GET_INFO  0x01
+#define UWB_DATA_CTRL_PULL      0x02
+#define UWB_DATA_CTRL_DONE      0x03
+#define UWB_DATA_CTRL_STOP      0x05
+
+/* DATA_CTRL_RESP 应答类型 */
+#define UWB_DATA_RESP_ACK   0x00
+#define UWB_DATA_RESP_WAIT  0x01
+#define UWB_DATA_RESP_STOP  0x02
+#define UWB_DATA_RESP_ERROR 0x03
+
+/* DATA_FRAG flags 位掩码 */
+#define UWB_DATA_FRAG_FLAG_META  0x01
+
+/* 分片参数 */
+#define UWB_DATA_FRAG_PAYLOAD_SIZE  62
+#define UWB_DATA_MAX_FRAGS          9
 
 typedef struct {
     uint8_t frame_ctrl[2];

@@ -67,6 +67,38 @@ typedef struct {
     uint64_t tag_rx_ts;
 } UwbRangeResult;
 
+/* ====== plan-v4 数据交互帧类型 ====== */
+
+/* DATA_CTRL 帧事件 (Anchor APP 收到) */
+typedef struct {
+    uint16_t src_id;
+    uint16_t session_id;
+    uint8_t  ctrl_type;    /* GET_INFO / PULL / DONE / STOP */
+    uint8_t  frag_id;      /* PULL 时有效 */
+} UwbDataCtrlEvent;
+
+/* DATA_FRAG 帧事件 (Tag APP 收到) */
+typedef struct {
+    uint16_t src_id;
+    uint16_t session_id;
+    uint8_t  frag_id;
+    uint8_t  total_frags;
+    uint8_t  flags;        /* bit0: meta */
+    int8_t   slot_index;   /* slot 持有帧数据 */
+    uint16_t payload_len;
+} UwbDataFragEvent;
+
+/* MAC 表条目 (Tag 侧维护) */
+typedef struct {
+    bool     valid;
+    uint16_t anchor_id;
+    uint32_t last_seen_ms;
+    uint32_t last_poll_ms;
+} mac_entry_t;
+
+#define MAC_TABLE_SIZE       8
+#define MAC_ENTRY_TIMEOUT_MS (3U * 60U * 1000U)
+
 #ifdef __cplusplus
 }
 #endif

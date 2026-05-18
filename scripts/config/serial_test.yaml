@@ -1,5 +1,22 @@
-# UWB 时隙分析配置
+# UWB serial and analysis config
 serial:
   tag: "COM6"
   anchor: "COM7"
   baudrate: 460800
+
+# Default input for scripts/frame-analysis/uwb_frame_analyzer.py.
+# Paths are repo-root relative by default. Absolute paths are also accepted.
+frame_analysis:
+  # true: capture serial.tag/serial.anchor first, then analyze captured logs.
+  # false: analyze configured log files; if no log files are configured, capture mode is used.
+  capture: true
+  # null means capture until Ctrl+C. Use a number for timed capture, for example 60.
+  capture_duration_s: null
+  # true echoes serial lines to terminal while saving logs.
+  show_serial: true
+  tag_log: ""
+  anchor_log: ""
+  logs: []
+  date: ""
+  twr_period_ms: null
+  no_backup: false
