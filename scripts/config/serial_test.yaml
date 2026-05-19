@@ -6,14 +6,17 @@ serial:
 
 # Default input for scripts/frame-analysis/uwb_frame_analyzer.py.
 # Paths are repo-root relative by default. Absolute paths are also accepted.
+# CLI behavior:
+# - no args: capture serial.tag / serial.anchor, then analyze all sessions
+# - with session range or explicit log inputs: analyze logs; if no paths are given, latest logs are used
 frame_analysis:
-  # true: capture serial.tag/serial.anchor first, then analyze captured logs.
-  # false: analyze configured log files; if no log files are configured, capture mode is used.
+  # legacy switch kept for compatibility; mode selection is now driven by CLI args.
   capture: true
   # null means capture until Ctrl+C. Use a number for timed capture, for example 60.
   capture_duration_s: null
   # true echoes serial lines to terminal while saving logs.
   show_serial: true
+  # legacy path fields; CLI analysis mode now prefers latest logs when no explicit paths are passed.
   tag_log: ""
   anchor_log: ""
   logs: []

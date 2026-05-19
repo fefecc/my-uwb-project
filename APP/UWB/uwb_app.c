@@ -24,6 +24,9 @@
 #define UWB_APP_ANT_DELAY_COMP_M  (0.0)
 
 #define TWR_MAX_ANCHORS  4
+#define TWR_DS_MAX_GAP_MS  12U
+#define TWR_DS_MAX_GAP_TICKS \
+    ((uint64_t)((TIME_SERVICE_LOCAL_TICKS_PER_SECOND * TWR_DS_MAX_GAP_MS) / 1000U))
 
 #define DATA_BUF_SIZE              512U
 #define DATA_WAIT_RETRY_MS         10U
@@ -35,14 +38,12 @@
 typedef struct {
     bool     valid;
     uint16_t anchor_id;
+    bool     have_prev_exchange;
     uint64_t anchor_tx_ts;
     uint64_t tag_rx_ts;
+    uint64_t tag_rx_local_tick_20k;
+    uint64_t last_published_frame_local_tick_20k;
 } twr_anchor_record_t;
-
-typedef enum {
-    TWR_MODE_DS,
-    TWR_MODE_SS,
-} twr_mode_t;
 
 typedef enum {
     TAG_DATA_IDLE = 0,
@@ -220,13 +221,24 @@ static void log_twr_frame(const char *mode,
 {
     if (mode == NULL || exchange == NULL || result == NULL) return;
 
-    app_log_info("[APP] TWR_FRAME mode=%s anchor=0x%04X seq=%u slot=%u dist=%.2fm pacc=%u",
+    double frame_local_ms =
+        ((double)result->frame_local_tick_20k * 1000.0) /
+        (double)TIME_SERVICE_LOCAL_TICKS_PER_SECOND;
+
+    app_log_info("[APP] TWR_FRAME mode=%s anchor=0x%04X seq=%u slot=%u dist=%.2fm pacc=%u frame_local_ms=%.3f",
                  mode,
                  exchange->anchor_id,
                  (unsigned)exchange->exchange_seq,
                  (unsigned)exchange->response_slot_id,
                  result->distance_m,
-                 (unsigned)exchange->quality.rx_pacc);
+                 (unsigned)result->quality.rx_pacc,
+                 frame_local_ms);
+}
+
+static double local_tick_to_ms(uint64_t local_tick_20k)
+{
+    return ((double)local_tick_20k * 1000.0) /
+           (double)TIME_SERVICE_LOCAL_TICKS_PER_SECOND;
 }
 
 /* ================================================================
@@ -239,6 +251,7 @@ static bool compute_range(const UwbTwrExchange *prev,
 {
     if (prev == NULL || cur == NULL || out == NULL ||
         prev->anchor_id != cur->anchor_id) {
+        app_log_warn("[APP] TWR_DBG_DS_FAIL reason=invalid_input");
         return false;
     }
 
@@ -255,7 +268,13 @@ static bool compute_range(const UwbTwrExchange *prev,
     double db = (double)get_timestamp_difference_u64((uint64_t)t7, (uint64_t)t6);
     double denom = ra + rb + da + db;
 
-    if (denom <= 0.0) return false;
+    if (denom <= 0.0) {
+        app_log_warn("[APP] TWR_DBG_DS_FAIL anchor=0x%04X seq=%u reason=denom ra=%.0f da=%.0f rb=%.0f db=%.0f denom=%.0f",
+                     cur->anchor_id,
+                     (unsigned)cur->exchange_seq,
+                     ra, da, rb, db, denom);
+        return false;
+    }
 
     double tof_ticks = ((ra * rb) - (da * db)) / denom;
     double distance = tof_ticks * UWB_APP_DW_TIME_UNIT * UWB_APP_SPEED_OF_LIGHT -
@@ -268,47 +287,16 @@ static bool compute_range(const UwbTwrExchange *prev,
     out->response_slot_id = cur->response_slot_id;
     out->status_flags    = cur->status_flags;
     out->distance_m      = distance;
-    out->range_quality   = (int16_t)cur->quality.rx_pacc;
+    out->quality         = cur->quality;
     out->retry_count     = cur->retry_count;
     out->tag_tx_ts       = cur->tag_tx_ts;
     out->anchor_rx_ts    = cur->anchor_rx_ts;
     out->anchor_tx_ts    = cur->anchor_tx_ts;
     out->tag_rx_ts       = cur->tag_rx_ts;
-    return true;
-}
-
-static bool compute_range_ss(const UwbTwrExchange *cur, UwbRangeResult *out)
-{
-    if (cur == NULL || out == NULL) return false;
-
-    uint64_t t1 = cur->tag_tx_ts;
-    uint64_t t2 = cur->anchor_rx_ts;
-    uint64_t t3 = cur->anchor_tx_ts;
-    uint64_t t4 = cur->tag_rx_ts;
-
-    uint64_t t_round = get_timestamp_difference_u64(t4, t1);
-    uint64_t t_reply = get_timestamp_difference_u64(t3, t2);
-    if (t_round <= t_reply) return false;
-
-    int64_t tof_ticks = (int64_t)(t_round - t_reply) / 2;
-    if (tof_ticks < 0) return false;
-
-    double distance = (double)tof_ticks * UWB_APP_DW_TIME_UNIT * UWB_APP_SPEED_OF_LIGHT -
-                      UWB_APP_ANT_DELAY_COMP_M;
-
-    memset(out, 0, sizeof(*out));
-    out->anchor_id       = cur->anchor_id;
-    out->tag_id          = g_app_cfg.short_addr;
-    out->exchange_seq    = cur->exchange_seq;
-    out->response_slot_id = cur->response_slot_id;
-    out->status_flags    = cur->status_flags;
-    out->distance_m      = distance;
-    out->range_quality   = (int16_t)cur->quality.rx_pacc;
-    out->retry_count     = cur->retry_count;
-    out->tag_tx_ts       = cur->tag_tx_ts;
-    out->anchor_rx_ts    = cur->anchor_rx_ts;
-    out->anchor_tx_ts    = cur->anchor_tx_ts;
-    out->tag_rx_ts       = cur->tag_rx_ts;
+    out->frame_local_tick_20k =
+        (prev->tag_rx_local_tick_20k / 2ULL) + (cur->tag_rx_local_tick_20k / 2ULL) +
+        ((prev->tag_rx_local_tick_20k & 1ULL) &&
+         (cur->tag_rx_local_tick_20k & 1ULL) ? 1ULL : 0ULL);
     return true;
 }
 
@@ -319,15 +307,22 @@ static void publish_range_result(const UwbRangeResult *result)
     AppDataNode node;
     memset(&node, 0, sizeof(node));
     node.source = APP_DATA_SRC_UWB;
-    (void)TimeService_GetTimestamp(&node.timestamp);
+    (void)TimeService_CaptureNow(&node.time_capture);
+    node.time_capture.local_tick_20k = result->frame_local_tick_20k;
     node.payload.uwb.anchor_id       = result->anchor_id;
     node.payload.uwb.tag_id          = result->tag_id;
     node.payload.uwb.exchange_seq    = result->exchange_seq;
     node.payload.uwb.response_slot_id= result->response_slot_id;
     node.payload.uwb.status_flags    = result->status_flags;
     node.payload.uwb.distance_m      = result->distance_m;
-    node.payload.uwb.range_quality   = result->range_quality;
     node.payload.uwb.retry_count     = result->retry_count;
+    node.payload.uwb.rx_pacc         = result->quality.rx_pacc;
+    node.payload.uwb.fp_index        = result->quality.fp_index;
+    node.payload.uwb.fp_ampl1        = result->quality.fp_ampl1;
+    node.payload.uwb.fp_ampl2        = result->quality.fp_ampl2;
+    node.payload.uwb.fp_ampl3        = result->quality.fp_ampl3;
+    node.payload.uwb.std_noise       = result->quality.std_noise;
+    node.payload.uwb.max_noise       = result->quality.max_noise;
     node.payload.uwb.tag_tx_ts       = result->tag_tx_ts;
     node.payload.uwb.anchor_rx_ts    = result->anchor_rx_ts;
     node.payload.uwb.anchor_tx_ts    = result->anchor_tx_ts;
@@ -349,57 +344,118 @@ static twr_anchor_record_t *find_anchor_record(uint16_t anchor_id)
         if (!g_anchor_records[i].valid) {
             g_anchor_records[i].valid = true;
             g_anchor_records[i].anchor_id = anchor_id;
+            g_anchor_records[i].have_prev_exchange = false;
             g_anchor_records[i].anchor_tx_ts = 0;
             g_anchor_records[i].tag_rx_ts = 0;
+            g_anchor_records[i].tag_rx_local_tick_20k = 0;
+            g_anchor_records[i].last_published_frame_local_tick_20k = 0;
             return &g_anchor_records[i];
         }
     }
     return NULL;
 }
 
+static bool twr_published_gap_ok(uint64_t last_published_frame_local_tick_20k,
+                                 uint64_t candidate_frame_local_tick_20k)
+{
+    if (candidate_frame_local_tick_20k == 0U) {
+        return false;
+    }
+    if (last_published_frame_local_tick_20k == 0U) {
+        return true;
+    }
+    if (candidate_frame_local_tick_20k < last_published_frame_local_tick_20k) {
+        return false;
+    }
+    return (candidate_frame_local_tick_20k - last_published_frame_local_tick_20k) <=
+           TWR_DS_MAX_GAP_TICKS;
+}
+
+static void twr_record_exchange(twr_anchor_record_t *rec,
+                                const UwbTwrExchange *exchange)
+{
+    if (rec == NULL || exchange == NULL) return;
+
+    rec->have_prev_exchange = true;
+    rec->anchor_tx_ts = exchange->anchor_tx_ts;
+    rec->tag_rx_ts = exchange->tag_rx_ts;
+    rec->tag_rx_local_tick_20k = exchange->tag_rx_local_tick_20k;
+}
+
 static void handle_twr_exchange(const UwbTwrExchange *exchange)
 {
-    if (exchange == NULL || exchange->tag_tx_ts == 0U) return;
+    if (exchange == NULL) return;
 
     if (g_app_cfg.role == APP_ROLE_TAG) {
         g_last_anchor_id = exchange->anchor_id;
         g_last_anchor_seen_ms = HAL_GetTick();
     }
 
+    if (exchange->tag_tx_ts == 0U) {
+        app_log_warn("[APP] TWR_RX_INVALID anchor=0x%04X seq=%u slot=%u tag_tx=0",
+                     exchange->anchor_id,
+                     (unsigned)exchange->exchange_seq,
+                     (unsigned)exchange->response_slot_id);
+        return;
+    }
+
     twr_anchor_record_t *rec = find_anchor_record(exchange->anchor_id);
+    if (rec == NULL) {
+        app_log_warn("[APP] TWR_REC_FULL anchor=0x%04X", exchange->anchor_id);
+        return;
+    }
+
+    if (!rec->have_prev_exchange) {
+        rec->last_published_frame_local_tick_20k = 0U;
+        twr_record_exchange(rec, exchange);
+        app_log_info("[APP] TWR_DBG_WAIT_PAIR anchor=0x%04X seq=%u",
+                     exchange->anchor_id,
+                     (unsigned)exchange->exchange_seq);
+        return;
+    }
+
     UwbRangeResult result;
-    twr_mode_t mode;
+    UwbTwrExchange prev;
+    memset(&prev, 0, sizeof(prev));
+    prev.anchor_id    = rec->anchor_id;
+    prev.anchor_tx_ts = rec->anchor_tx_ts;
+    prev.tag_rx_ts    = rec->tag_rx_ts;
+    prev.tag_rx_local_tick_20k = rec->tag_rx_local_tick_20k;
 
-    if (rec != NULL && rec->anchor_tx_ts != 0) {
-        UwbTwrExchange prev;
-        memset(&prev, 0, sizeof(prev));
-        prev.anchor_id    = rec->anchor_id;
-        prev.anchor_tx_ts = rec->anchor_tx_ts;
-        prev.tag_rx_ts    = rec->tag_rx_ts;
+    if (!compute_range(&prev, exchange, &result)) {
+        app_log_warn("[APP] TWR_DBG_DS_DROP anchor=0x%04X seq=%u action=rebuild_window reason=compute",
+                     exchange->anchor_id,
+                     (unsigned)exchange->exchange_seq);
+        rec->last_published_frame_local_tick_20k = 0U;
+        twr_record_exchange(rec, exchange);
+        return;
+    }
 
-        if (compute_range(&prev, exchange, &result)) {
-            mode = TWR_MODE_DS;
-            result.status_flags |= 0x01;
-            publish_range_result(&result);
-            log_twr_frame("DS", exchange, &result);
-        } else {
-            mode = TWR_MODE_SS;
+    {
+        bool gap_ok = twr_published_gap_ok(rec->last_published_frame_local_tick_20k,
+                                           result.frame_local_tick_20k);
+        app_log_info("[APP] TWR_DBG_GAP anchor=0x%04X seq=%u last_ms=%.3f cand_ms=%.3f gap_ok=%u",
+                     exchange->anchor_id,
+                     (unsigned)exchange->exchange_seq,
+                     local_tick_to_ms(rec->last_published_frame_local_tick_20k),
+                     local_tick_to_ms(result.frame_local_tick_20k),
+                     (unsigned)gap_ok);
+
+        if (!gap_ok) {
+            app_log_warn("[APP] TWR_DBG_DS_DROP anchor=0x%04X seq=%u action=rebuild_window reason=gap",
+                         exchange->anchor_id,
+                         (unsigned)exchange->exchange_seq);
+            rec->last_published_frame_local_tick_20k = 0U;
+            twr_record_exchange(rec, exchange);
+            return;
         }
-    } else {
-        mode = TWR_MODE_SS;
     }
 
-    if (mode == TWR_MODE_SS) {
-        if (compute_range_ss(exchange, &result)) {
-            publish_range_result(&result);
-            log_twr_frame("SS", exchange, &result);
-        }
-    }
-
-    if (rec != NULL) {
-        rec->anchor_tx_ts = exchange->anchor_tx_ts;
-        rec->tag_rx_ts    = exchange->tag_rx_ts;
-    }
+    result.status_flags |= 0x01;
+    publish_range_result(&result);
+    log_twr_frame("DS", exchange, &result);
+    twr_record_exchange(rec, exchange);
+    rec->last_published_frame_local_tick_20k = result.frame_local_tick_20k;
 }
 
 /* ================================================================

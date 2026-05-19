@@ -101,20 +101,24 @@ bool StorageService_WriteNodeAscii(FIL *file, const AppDataNode *node)
 
     char line[256];
     int n = 0;
-    const TimeTimestamp *ts = &node->timestamp;
-    uint32_t week = ts->utc_valid ? ts->local_utc.week : 0U;
-    uint32_t week_ms = ts->utc_valid ? ts->local_utc.week_ms : 0U;
+    TimeTimestamp ts;
+    if (!TimeService_ResolveCapture(&node->time_capture, &ts)) {
+        return false;
+    }
+
+    uint32_t week = ts.utc_valid ? ts.local_utc.week : 0U;
+    uint32_t week_ms = ts.utc_valid ? ts.local_utc.week_ms : 0U;
 
     switch (node->source) {
         case APP_DATA_SRC_GNSS:
             n = snprintf(line, sizeof(line),
-                         "GNSS,%lu,%lu,0x%02lX%08lX,%.3f,%u,%.9f,%.9f,%.4f,%.4f,%.4f,%.4f,%lu,%lu,%u,%u\r\n",
+                         "0x%02lX%08lX,%.3f,%lu,%lu,%u,GNSS,%.9f,%.9f,%.4f,%.4f,%.4f,%.4f,%lu,%lu,%u,%u\r\n",
+                         (uint32_t)(ts.local_clock.sec >> 32),
+                         (uint32_t)(ts.local_clock.sec & 0xFFFFFFFF),
+                         (double)ts.local_clock.ms,
                          (unsigned long)week,
                          (unsigned long)week_ms,
-                         (uint32_t)(ts->local_clock.sec >> 32),
-                         (uint32_t)(ts->local_clock.sec & 0xFFFFFFFF),
-                         (double)ts->local_clock.ms,
-                         ts->utc_valid ? 1U : 0U,
+                         ts.utc_valid ? 1U : 0U,
                          node->payload.gnss.lat,
                          node->payload.gnss.lon,
                          node->payload.gnss.hgt,
@@ -129,13 +133,13 @@ bool StorageService_WriteNodeAscii(FIL *file, const AppDataNode *node)
 
         case APP_DATA_SRC_IMU:
             n = snprintf(line, sizeof(line),
-                         "IMU,%lu,%lu,0x%02lX%08lX,%.3f,%u,%d,%d,%d,%d,%d,%d\r\n",
+                         "0x%02lX%08lX,%.3f,%lu,%lu,%u,IMU,%d,%d,%d,%d,%d,%d\r\n",
+                         (uint32_t)(ts.local_clock.sec >> 32),
+                         (uint32_t)(ts.local_clock.sec & 0xFFFFFFFF),
+                         (double)ts.local_clock.ms,
                          (unsigned long)week,
                          (unsigned long)week_ms,
-                         (uint32_t)(ts->local_clock.sec >> 32),
-                         (uint32_t)(ts->local_clock.sec & 0xFFFFFFFF),
-                         (double)ts->local_clock.ms,
-                         ts->utc_valid ? 1U : 0U,
+                         ts.utc_valid ? 1U : 0U,
                          node->payload.imu.accel[0],
                          node->payload.imu.accel[1],
                          node->payload.imu.accel[2],

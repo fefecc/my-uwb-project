@@ -49,6 +49,8 @@ typedef struct {
     uint8_t  data_flags;     /* plan-v4: DATA_FRAG flags */
     uint64_t rx_ts;
     uint64_t tx_ts;
+    uint64_t rx_local_tick_20k;
+    uint64_t tx_local_tick_20k;
 
     /* 快速应答信息 */
     uint8_t  reply_type;   /* 0 = 没有快速应答 */

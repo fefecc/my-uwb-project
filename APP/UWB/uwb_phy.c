@@ -476,11 +476,30 @@ static void irq_rx_ok(uint32_t status)
     dwt_readrxdata(s->data, frame_len, 0);
     s->data_len  = frame_len;
     s->rx_ts     = UwbPhy_ReadRxTimestamp();
+    (void)TimeService_GetLocalTick20k(&s->rx_local_tick_20k);
     s->window_id = g_phy.window_id;
 
     /* RX 质量 */
-    memset(&s->quality, 0, sizeof(s->quality));
-    s->quality.rx_pacc = (uint16_t)((frame_info & RX_FINFO_RXPACC_MASK) >> RX_FINFO_RXPACC_SHIFT);
+    {
+        dwt_rxdiag_t diag;
+
+        memset(&diag, 0, sizeof(diag));
+        memset(&s->quality, 0, sizeof(s->quality));
+        dwt_readdiagnostics(&diag);
+
+        s->quality.rx_pacc = diag.rxPreamCount;
+        s->quality.fp_index = diag.firstPath;
+        s->quality.fp_ampl1 = diag.firstPathAmp1;
+        s->quality.fp_ampl2 = diag.firstPathAmp2;
+        s->quality.fp_ampl3 = diag.firstPathAmp3;
+        s->quality.std_noise = diag.stdNoise;
+        s->quality.max_noise = diag.maxNoise;
+
+        if (s->quality.rx_pacc == 0U) {
+            s->quality.rx_pacc =
+                (uint16_t)((frame_info & RX_FINFO_RXPACC_MASK) >> RX_FINFO_RXPACC_SHIFT);
+        }
+    }
 
     /* 解析帧头用于地址过滤和快速应答 */
     UwbProtocolFrame frame;
@@ -915,8 +934,10 @@ static void run_state_machine(void)
                     /* 快速应答完成: 只需读 TX 时间戳并 re-listen */
                     if (g_phy.fast_reply_active) {
                         uint64_t tx_ts = UwbPhy_ReadTxTimestamp();
+                        uint64_t tx_local_tick_20k = 0;
                         int8_t sent_slot = g_phy.tx_slot;
                         const char *tag = g_phy.fast_reply_is_data ? "data" : "disc";
+                        (void)TimeService_GetLocalTick20k(&tx_local_tick_20k);
                         app_log_info("[PHY] fast_reply[%s] tx=0x%02lX%08lX",
                                      tag,
                                      (uint32_t)(tx_ts >> 32),
@@ -925,6 +946,7 @@ static void run_state_machine(void)
                             uwb_slot_t *sent = UwbSlots_Get(sent_slot);
                             if (sent != NULL) {
                                 sent->tx_ts = tx_ts;
+                                sent->tx_local_tick_20k = tx_local_tick_20k;
                                 phy_evt_t evt = {
                                     .type = PHY_EVT_DATA_SENT,
                                     .slot_index = sent_slot,
@@ -943,9 +965,12 @@ static void run_state_machine(void)
 
                     /* 填 TX 时间戳到 slot，PHY 不回收，交给 LINK 层管理生命周期 */
                     uint64_t tx_ts = UwbPhy_ReadTxTimestamp();
+                    uint64_t tx_local_tick_20k = 0;
+                    (void)TimeService_GetLocalTick20k(&tx_local_tick_20k);
                     uwb_slot_t *s = UwbSlots_Get(g_phy.tx_slot);
                     if (s != NULL) {
                         s->tx_ts = tx_ts;
+                        s->tx_local_tick_20k = tx_local_tick_20k;
                     }
 
                     int8_t tx_slot_idx = g_phy.tx_slot;

@@ -695,13 +695,17 @@ static void handle_disc_rx_slot_done(const phy_evt_t *evt)
             memset(&twr, 0, sizeof(twr));
             twr.anchor_id    = s->src_short;
             twr.exchange_seq = frame.mac.seq;
+            twr.response_slot_id = evt->rx_seq;
             {
                 uwb_slot_t *tx_slot = UwbSlots_Get(g_link.tx_slot_idx);
                 twr.tag_tx_ts = (tx_slot != NULL) ? tx_slot->tx_ts : 0;
+                twr.tag_tx_local_tick_20k =
+                    (tx_slot != NULL) ? tx_slot->tx_local_tick_20k : 0;
             }
             twr.anchor_rx_ts = anchor_rx_ts;
             twr.anchor_tx_ts = anchor_tx_ts;
             twr.tag_rx_ts    = s->rx_ts;
+            twr.tag_rx_local_tick_20k = s->rx_local_tick_20k;
             twr.quality      = s->quality;
 
             UwbLinkAppEvent app_evt;
@@ -1057,10 +1061,6 @@ static bool link_tag_send_disc(void)
     g_disc_outstanding++;
     g_link.tx_slot_idx = -1;
     g_to.disc_cmd_sent_ms = HAL_GetTick();
-
-    app_log_info("[LINK] DISC_REQ win=%u seq=%u slot=%d rx=%u pipe=%u",
-                 g_link.window_id, (unsigned)(g_link.seq - 1), (int)idx,
-                 (unsigned)cmd.rx_slot_count, (unsigned)g_disc_outstanding);
     return true;
 }
 

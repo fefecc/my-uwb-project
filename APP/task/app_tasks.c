@@ -792,29 +792,32 @@ static size_t bounded_strlen(const char *text, size_t max_len)
     return len;
 }
 
-static size_t format_node_ascii(const AppDataNode *node, char *line, size_t line_size)
+static size_t format_node_ascii(const AppDataNode *node,
+                                const TimeTimestamp *ts,
+                                char *line,
+                                size_t line_size)
 {
     int n = 0;
 
-    if (node == NULL || line == NULL || line_size == 0U) {
+    if (node == NULL || ts == NULL || line == NULL || line_size == 0U) {
         return 0;
     }
 
-    const TimeTimestamp *ts = &node->timestamp;
-    uint32_t week           = ts->utc_valid ? ts->local_utc.week : 0U;
-    uint32_t week_ms        = ts->utc_valid ? ts->local_utc.week_ms : 0U;
-    uint32_t week_sec       = week_ms / 1000U;
-    uint32_t week_ms_rem    = week_ms % 1000U;
+    uint32_t week = ts->utc_valid ? ts->local_utc.week : 0U;
+    uint32_t week_ms = ts->utc_valid ? ts->local_utc.week_ms : 0U;
+    uint32_t week_sec = week_ms / 1000U;
+    uint32_t week_ms_rem = week_ms % 1000U;
 
     switch (node->source) {
         case APP_DATA_SRC_GNSS:
             n = snprintf(line, line_size,
-                         "GNSS,%lu,%lu.%03lu,%lu,%.3f,%u,%.17f,%.17f,%.17f,%lu,%.9f,%.9f,%.9f,%lu,%lu,%.9f,%.9f,%u,%u\r\n",
+                         "0x%02lX%08lX,%.3f,%lu,%lu.%03lu,%u,GNSS,%.17f,%.17f,%.17f,%lu,%.9f,%.9f,%.9f,%lu,%lu,%.9f,%.9f,%u,%u\r\n",
+                         (uint32_t)(ts->local_clock.sec >> 32),
+                         (uint32_t)(ts->local_clock.sec & 0xFFFFFFFF),
+                         (double)ts->local_clock.ms,
                          (unsigned long)week,
                          (unsigned long)week_sec,
                          (unsigned long)week_ms_rem,
-                         (unsigned long)ts->local_clock.sec,
-                         (double)ts->local_clock.ms,
                          ts->utc_valid ? 1U : 0U,
                          node->payload.gnss.lat,
                          node->payload.gnss.lon,
@@ -833,12 +836,13 @@ static size_t format_node_ascii(const AppDataNode *node, char *line, size_t line
 
         case APP_DATA_SRC_IMU:
             n = snprintf(line, line_size,
-                         "IMU,%lu,%lu.%03lu,%lu,%.3f,%u,%d,%d,%d,%d,%d,%d\r\n",
+                         "0x%02lX%08lX,%.3f,%lu,%lu.%03lu,%u,IMU,%d,%d,%d,%d,%d,%d\r\n",
+                         (uint32_t)(ts->local_clock.sec >> 32),
+                         (uint32_t)(ts->local_clock.sec & 0xFFFFFFFF),
+                         (double)ts->local_clock.ms,
                          (unsigned long)week,
                          (unsigned long)week_sec,
                          (unsigned long)week_ms_rem,
-                         (unsigned long)ts->local_clock.sec,
-                         (double)ts->local_clock.ms,
                          ts->utc_valid ? 1U : 0U,
                          node->payload.imu.accel[0],
                          node->payload.imu.accel[1],
@@ -850,14 +854,14 @@ static size_t format_node_ascii(const AppDataNode *node, char *line, size_t line
 
         case APP_DATA_SRC_UWB:
             n = snprintf(line, line_size,
-                         "UWB,%lu,%lu.%03lu,0x%02lX%08lX,%.3f,%u,%u,%u,%u,%u,%u,%.17f,%d,%u,"
+                         "0x%02lX%08lX,%.3f,%lu,%lu.%03lu,%u,UWB,%u,%u,%u,%u,%u,%.17f,%u,%u,%u,%u,%u,%u,%u,%u,"
                          "0x%02lX%08lX,0x%02lX%08lX,0x%02lX%08lX,0x%02lX%08lX\r\n",
-                         (unsigned long)week,
-                         (unsigned long)week_sec,
-                         (unsigned long)week_ms_rem,
                          (uint32_t)(ts->local_clock.sec >> 32),
                          (uint32_t)(ts->local_clock.sec & 0xFFFFFFFF),
                          (double)ts->local_clock.ms,
+                         (unsigned long)week,
+                         (unsigned long)week_sec,
+                         (unsigned long)week_ms_rem,
                          ts->utc_valid ? 1U : 0U,
                          node->payload.uwb.anchor_id,
                          node->payload.uwb.tag_id,
@@ -865,8 +869,14 @@ static size_t format_node_ascii(const AppDataNode *node, char *line, size_t line
                          node->payload.uwb.response_slot_id,
                          node->payload.uwb.status_flags,
                          node->payload.uwb.distance_m,
-                         node->payload.uwb.range_quality,
                          node->payload.uwb.retry_count,
+                         node->payload.uwb.rx_pacc,
+                         node->payload.uwb.fp_index,
+                         node->payload.uwb.fp_ampl1,
+                         node->payload.uwb.fp_ampl2,
+                         node->payload.uwb.fp_ampl3,
+                         node->payload.uwb.std_noise,
+                         node->payload.uwb.max_noise,
                          (uint32_t)(node->payload.uwb.tag_tx_ts >> 32),
                          (uint32_t)(node->payload.uwb.tag_tx_ts & 0xFFFFFFFF),
                          (uint32_t)(node->payload.uwb.anchor_rx_ts >> 32),
@@ -915,7 +925,7 @@ static void gnss_frame_handler(uint16_t msg_id,
 
     AppDataNode node = {0};
     node.source      = APP_DATA_SRC_GNSS;
-    (void)TimeService_GetTimestamp(&node.timestamp);
+    (void)TimeService_CaptureNow(&node.time_capture);
     node.payload.gnss.lat         = nav.lat;
     node.payload.gnss.lon         = nav.lon;
     node.payload.gnss.hgt         = nav.hgt;
@@ -935,18 +945,12 @@ static void gnss_frame_handler(uint16_t msg_id,
     }
 }
 
-static int compare_local_clock(const TimeLocalClock *a, const TimeLocalClock *b)
+static int compare_local_tick(uint64_t a, uint64_t b)
 {
-    if (a->sec < b->sec) {
+    if (a < b) {
         return -1;
     }
-    if (a->sec > b->sec) {
-        return 1;
-    }
-    if (a->ms < b->ms) {
-        return -1;
-    }
-    if (a->ms > b->ms) {
+    if (a > b) {
         return 1;
     }
     return 0;
@@ -954,8 +958,8 @@ static int compare_local_clock(const TimeLocalClock *a, const TimeLocalClock *b)
 
 static int compare_node_time(const AppDataNode *a, const AppDataNode *b)
 {
-    return compare_local_clock(&a->timestamp.local_clock,
-                               &b->timestamp.local_clock);
+    return compare_local_tick(a->time_capture.local_tick_20k,
+                              b->time_capture.local_tick_20k);
 }
 
 static void sorted_window_insert(AppDataNode *nodes,
@@ -983,8 +987,15 @@ static void write_sorted_node_to_sd(const AppDataNode *node)
         return;
     }
 
+    TimeTimestamp ts;
+    if (!TimeService_ResolveCapture(&node->time_capture, &ts)) {
+        app_log_warn("resolve data node time failed: source=%s",
+                     data_source_name(node->source));
+        return;
+    }
+
     char line[APP_ASCII_LINE_SIZE];
-    size_t len = format_node_ascii(node, line, sizeof(line));
+    size_t len = format_node_ascii(node, &ts, line, sizeof(line));
 
     if (len == 0U) {
         app_log_warn("format data node failed: source=%s",
@@ -1119,7 +1130,7 @@ void AppImuTask(void *argument)
         AppDataNode node = {0};
         node.source      = APP_DATA_SRC_IMU;
         if (ImuDevice_ReadRaw(&node.payload.imu) == 0) {
-            (void)TimeService_GetTimestamp(&node.timestamp);
+            (void)TimeService_CaptureNow(&node.time_capture);
             if (!DataService_Send(&node, 0)) {
                 app_log_warn("IMU data queue full");
             }

@@ -56,8 +56,14 @@ typedef struct {
     uint16_t response_slot_id;
     uint16_t status_flags;
     double distance_m;
-    int16_t range_quality;
     uint8_t retry_count;
+    uint16_t rx_pacc;
+    uint16_t fp_index;
+    uint16_t fp_ampl1;
+    uint16_t fp_ampl2;
+    uint16_t fp_ampl3;
+    uint16_t std_noise;
+    uint16_t max_noise;
     uint64_t tag_tx_ts;
     uint64_t anchor_rx_ts;
     uint64_t anchor_tx_ts;
@@ -66,7 +72,7 @@ typedef struct {
 
 typedef struct {
     AppDataSource source;
-    TimeTimestamp timestamp;
+    TimeCapture time_capture;
     union {
         AppGnssSample gnss;
         AppImuSample imu;

@@ -48,6 +48,8 @@ typedef struct {
     uint64_t anchor_rx_ts;
     uint64_t anchor_tx_ts;
     uint64_t tag_rx_ts;
+    uint64_t tag_tx_local_tick_20k;
+    uint64_t tag_rx_local_tick_20k;
     UwbRxQuality quality;
     uint8_t retry_count;
 } UwbTwrExchange;
@@ -59,12 +61,13 @@ typedef struct {
     uint16_t response_slot_id;
     uint16_t status_flags;
     double distance_m;
-    int16_t range_quality;
+    UwbRxQuality quality;
     uint8_t retry_count;
     uint64_t tag_tx_ts;
     uint64_t anchor_rx_ts;
     uint64_t anchor_tx_ts;
     uint64_t tag_rx_ts;
+    uint64_t frame_local_tick_20k;
 } UwbRangeResult;
 
 /* ====== plan-v4 数据交互帧类型 ====== */
