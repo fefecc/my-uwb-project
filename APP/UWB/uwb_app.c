@@ -27,6 +27,9 @@
 #define TWR_DS_MAX_GAP_MS  12U
 #define TWR_DS_MAX_GAP_TICKS \
     ((uint64_t)((TIME_SERVICE_LOCAL_TICKS_PER_SECOND * TWR_DS_MAX_GAP_MS) / 1000U))
+#define TWR_DS_DROP_GAP_MS  30U
+#define TWR_DS_DROP_GAP_TICKS \
+    ((uint64_t)((TIME_SERVICE_LOCAL_TICKS_PER_SECOND * TWR_DS_DROP_GAP_MS) / 1000U))
 
 #define DATA_BUF_SIZE              512U
 #define DATA_WAIT_RETRY_MS         10U
@@ -241,6 +244,44 @@ static double local_tick_to_ms(uint64_t local_tick_20k)
            (double)TIME_SERVICE_LOCAL_TICKS_PER_SECOND;
 }
 
+typedef enum {
+    TWR_GAP_SHORT = 0,
+    TWR_GAP_LONG,
+    TWR_GAP_DROP,
+} twr_gap_class_t;
+
+static bool twr_get_published_gap_info(uint64_t last_published_frame_local_tick_20k,
+                                       uint64_t candidate_frame_local_tick_20k,
+                                       uint64_t *gap_ticks,
+                                       twr_gap_class_t *gap_class)
+{
+    if (gap_ticks == NULL || gap_class == NULL ||
+        candidate_frame_local_tick_20k == 0U) {
+        return false;
+    }
+
+    if (last_published_frame_local_tick_20k == 0U) {
+        *gap_ticks = 0U;
+        *gap_class = TWR_GAP_SHORT;
+        return true;
+    }
+
+    if (candidate_frame_local_tick_20k < last_published_frame_local_tick_20k) {
+        return false;
+    }
+
+    *gap_ticks = candidate_frame_local_tick_20k -
+                 last_published_frame_local_tick_20k;
+    if (*gap_ticks <= TWR_DS_MAX_GAP_TICKS) {
+        *gap_class = TWR_GAP_SHORT;
+    } else if (*gap_ticks <= TWR_DS_DROP_GAP_TICKS) {
+        *gap_class = TWR_GAP_LONG;
+    } else {
+        *gap_class = TWR_GAP_DROP;
+    }
+    return true;
+}
+
 /* ================================================================
  *  DS/SS-TWR 测距计算
  * ================================================================ */
@@ -355,22 +396,6 @@ static twr_anchor_record_t *find_anchor_record(uint16_t anchor_id)
     return NULL;
 }
 
-static bool twr_published_gap_ok(uint64_t last_published_frame_local_tick_20k,
-                                 uint64_t candidate_frame_local_tick_20k)
-{
-    if (candidate_frame_local_tick_20k == 0U) {
-        return false;
-    }
-    if (last_published_frame_local_tick_20k == 0U) {
-        return true;
-    }
-    if (candidate_frame_local_tick_20k < last_published_frame_local_tick_20k) {
-        return false;
-    }
-    return (candidate_frame_local_tick_20k - last_published_frame_local_tick_20k) <=
-           TWR_DS_MAX_GAP_TICKS;
-}
-
 static void twr_record_exchange(twr_anchor_record_t *rec,
                                 const UwbTwrExchange *exchange)
 {
@@ -432,28 +457,51 @@ static void handle_twr_exchange(const UwbTwrExchange *exchange)
     }
 
     {
-        bool gap_ok = twr_published_gap_ok(rec->last_published_frame_local_tick_20k,
-                                           result.frame_local_tick_20k);
-        app_log_info("[APP] TWR_DBG_GAP anchor=0x%04X seq=%u last_ms=%.3f cand_ms=%.3f gap_ok=%u",
-                     exchange->anchor_id,
-                     (unsigned)exchange->exchange_seq,
-                     local_tick_to_ms(rec->last_published_frame_local_tick_20k),
-                     local_tick_to_ms(result.frame_local_tick_20k),
-                     (unsigned)gap_ok);
-
-        if (!gap_ok) {
-            app_log_warn("[APP] TWR_DBG_DS_DROP anchor=0x%04X seq=%u action=rebuild_window reason=gap",
+        uint64_t gap_ticks = 0U;
+        twr_gap_class_t gap_class = TWR_GAP_SHORT;
+        if (!twr_get_published_gap_info(rec->last_published_frame_local_tick_20k,
+                                        result.frame_local_tick_20k,
+                                        &gap_ticks,
+                                        &gap_class)) {
+            app_log_warn("[APP] TWR_DBG_DS_DROP anchor=0x%04X seq=%u action=rebuild_window reason=frame_time",
                          exchange->anchor_id,
                          (unsigned)exchange->exchange_seq);
             rec->last_published_frame_local_tick_20k = 0U;
             twr_record_exchange(rec, exchange);
             return;
         }
-    }
 
-    result.status_flags |= 0x01;
-    publish_range_result(&result);
-    log_twr_frame("DS", exchange, &result);
+        app_log_info("[APP] TWR_DBG_GAP anchor=0x%04X seq=%u last_ms=%.3f cand_ms=%.3f gap_ms=%.3f gap_class=%s",
+                     exchange->anchor_id,
+                     (unsigned)exchange->exchange_seq,
+                     local_tick_to_ms(rec->last_published_frame_local_tick_20k),
+                     local_tick_to_ms(result.frame_local_tick_20k),
+                     local_tick_to_ms(gap_ticks),
+                     gap_class == TWR_GAP_SHORT ? "SHORT" :
+                     (gap_class == TWR_GAP_LONG ? "LONG" : "DROP"));
+
+        if (gap_class == TWR_GAP_DROP) {
+            app_log_warn("[APP] TWR_DBG_DS_DROP anchor=0x%04X seq=%u action=rebuild_window reason=gap_timeout gap_ms=%.3f",
+                         exchange->anchor_id,
+                         (unsigned)exchange->exchange_seq,
+                         local_tick_to_ms(gap_ticks));
+            rec->last_published_frame_local_tick_20k = 0U;
+            twr_record_exchange(rec, exchange);
+            return;
+        }
+
+        result.status_flags &= (uint16_t)~(APP_UWB_STATUS_FLAG_TWR_DS |
+                                           APP_UWB_STATUS_FLAG_TWR_DS_SHORT |
+                                           APP_UWB_STATUS_FLAG_TWR_DS_LONG);
+        result.status_flags |= APP_UWB_STATUS_FLAG_TWR_DS;
+        result.status_flags |= gap_class == TWR_GAP_SHORT ?
+            APP_UWB_STATUS_FLAG_TWR_DS_SHORT :
+            APP_UWB_STATUS_FLAG_TWR_DS_LONG;
+
+        publish_range_result(&result);
+        log_twr_frame(gap_class == TWR_GAP_SHORT ? "DS_SHORT" : "DS_LONG",
+                      exchange, &result);
+    }
     twr_record_exchange(rec, exchange);
     rec->last_published_frame_local_tick_20k = result.frame_local_tick_20k;
 }

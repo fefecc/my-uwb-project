@@ -28,6 +28,12 @@ typedef enum {
     APP_DATA_SRC_UWB = 3,
 } AppDataSource;
 
+/* UWB TWR result status bits.
+ * DS_SHORT and DS_LONG are mutually exclusive and only valid with TWR_DS. */
+#define APP_UWB_STATUS_FLAG_TWR_DS       0x0001U
+#define APP_UWB_STATUS_FLAG_TWR_DS_SHORT 0x0002U
+#define APP_UWB_STATUS_FLAG_TWR_DS_LONG  0x0004U
+
 typedef struct {
     double lat;
     double lon;
