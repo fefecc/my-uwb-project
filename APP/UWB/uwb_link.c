@@ -16,6 +16,7 @@
 #include "uwb_slots.h"
 #include "uwb_protocol.h"
 #include "uwb_timestamp.h"
+#include "uwb_loss_test.h"
 #include "../service/log_service.h"
 
 /* LINK/PHY 调试日志会明显影响串口吞吐；默认只输出 START 和 WARN/ERROR。 */
@@ -115,13 +116,14 @@ static void post_app_event(const UwbLinkAppEvent *evt)
  *  DISC 帧构建
  * ================================================================ */
 
-static uint16_t build_disc_req(uint8_t *buf, size_t buf_size)
+static uint16_t build_disc_req(uint8_t *buf, size_t buf_size, uint8_t *seq_out)
 {
     UwbProtocolFrame frame;
+    uint8_t seq = next_seq();
     UwbProtocol_InitFrame(&frame,
                           &g_link.cfg,
                           UWB_STACK_BROADCAST_SHORT_ID,
-                          next_seq(),
+                          seq,
                           UWB_FUNC_DISCOVERY_REQ);
 
     frame.common.ext_header_len = 10U;
@@ -133,6 +135,9 @@ static uint16_t build_disc_req(uint8_t *buf, size_t buf_size)
     size_t tx_len = 0;
     if (!UwbProtocol_Encode(&frame, buf, buf_size, &tx_len)) {
         return 0;
+    }
+    if (seq_out != NULL) {
+        *seq_out = seq;
     }
     return (uint16_t)tx_len;
 }
@@ -708,6 +713,10 @@ static void handle_disc_rx_slot_done(const phy_evt_t *evt)
             twr.tag_rx_local_tick_20k = s->rx_local_tick_20k;
             twr.quality      = s->quality;
 
+            (void)UwbLossTest_PostRangeRx((uint8_t)frame.mac.seq,
+                                          twr.anchor_id,
+                                          (uint8_t)twr.response_slot_id);
+
             UwbLinkAppEvent app_evt;
             memset(&app_evt, 0, sizeof(app_evt));
             app_evt.type     = UWB_LINK_APP_EVT_TWR_EXCHANGE;
@@ -1033,7 +1042,8 @@ static bool link_tag_send_disc(void)
     uwb_slot_t *s = UwbSlots_Get(idx);
     g_link.window_id++;
     s->window_id = g_link.window_id;
-    s->data_len  = build_disc_req(s->data, sizeof(s->data));
+    uint8_t tx_seq = 0U;
+    s->data_len  = build_disc_req(s->data, sizeof(s->data), &tx_seq);
 
     if (s->data_len == 0) {
         app_log_warn("[LINK] build DISC_REQ fail");
@@ -1058,6 +1068,7 @@ static bool link_tag_send_disc(void)
     }
 
     UwbPhy_NotifyCmd();
+    (void)UwbLossTest_PostRangeTx(tx_seq);
     g_disc_outstanding++;
     g_link.tx_slot_idx = -1;
     g_to.disc_cmd_sent_ms = HAL_GetTick();

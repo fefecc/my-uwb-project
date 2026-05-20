@@ -19,6 +19,7 @@ typedef enum {
 
 typedef struct {
     bool pressed;
+    bool raw_pressed;
     bool long_reported;
     uint32_t press_tick;
     uint32_t debounce_tick;
@@ -26,7 +27,9 @@ typedef struct {
 
 void BspKey_Init(BspKeyState *state);
 bool BspKey_IsPressed(void);
-BspKeyEvent BspKey_Poll(BspKeyState *state, uint32_t long_press_ms);
+BspKeyEvent BspKey_Poll(BspKeyState *state,
+                         uint32_t short_press_ms,
+                         uint32_t long_press_ms);
 
 #ifdef __cplusplus
 }

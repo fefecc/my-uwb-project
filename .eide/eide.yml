@@ -89,7 +89,7 @@ targets:
     uploadConfigMap:
       JLink:
         baseAddr: "0x08000000"
-        bin: ""
+        bin: build/Debug/UWB.hex
         cpuInfo:
           cpuName: STM32H743VI
           vendor: ST
@@ -98,20 +98,20 @@ targets:
         speed: 8000
       OpenOCD:
         baseAddr: "0x08000000"
-        bin: ""
+        bin: build/Debug/UWB.hex
         interface: stlink
         target: stm32h7x
       probe-rs:
         allowEraseAll: false
         baseAddr: "0x08000000"
-        bin: ""
+        bin: build/Debug/UWB.hex
         otherOptions: ""
         protocol: swd
         speed: 0
         target: STM32F103C8
       pyOCD:
         baseAddr: "0x08000000"
-        bin: ""
+        bin: build/Debug/UWB.hex
         config: .eide/debug.pyocd.yaml
         otherCmds: ""
         speed: 4M
@@ -180,17 +180,17 @@ targets:
         useCustomScatterFile: true
     uploadConfigMap:
       JLink:
-        baseAddr: ""
-        bin: ""
+        baseAddr: "0x08000000"
+        bin: build/Release/UWB.hex
         cpuInfo:
-          cpuName: "null"
-          vendor: "null"
+          cpuName: STM32H743VI
+          vendor: ST
         otherCmds: ""
         proType: 1
         speed: 8000
       OpenOCD:
         baseAddr: "0x08000000"
-        bin: ""
+        bin: build/Release/UWB.hex
         interface: stlink
         target: stm32h7x
     uploader: OpenOCD

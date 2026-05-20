@@ -16,6 +16,24 @@ bool AppTasks_CreateAll(AppMode mode);
 void AppTasks_LogInit(void);
 bool AppTasks_LogWriteText(const char *text, size_t len);
 bool AppTasks_LogWriteSd(const char *text, size_t len);
+
+typedef enum {
+    LED_LOSS_MODE_OFF = 0,
+    LED_LOSS_MODE_CONFIRM,
+    LED_LOSS_MODE_RATE,
+} LedLossMode;
+
+typedef struct {
+    LedLossMode mode;
+    uint8_t valid;
+    uint8_t rate;
+    uint8_t led0;
+    uint8_t led1;
+    uint8_t led2;
+} LedLossCmd;
+
+bool AppTasks_SendLedLossCmd(const LedLossCmd *cmd);
+
 void AppTasks_NotifyImuIrqFromISR(void);
 void AppTasks_NotifyKeyIrqFromISR(void);
 void AppTasks_NotifyGnssDmaBlockFromISR(uint32_t len);

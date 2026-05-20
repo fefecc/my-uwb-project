@@ -19,24 +19,29 @@
 #include "../service/log_service.h"
 #include "../service/storage_service.h"
 #include "../service/time_service.h"
+#include "../UWB/uwb_loss_test.h"
 #include "../UWB/uwb_stack.h"
 
-#define APP_GNSS_RX_BUFFER_SIZE      (1024U)
-#define APP_USART_CMD_RX_BUFFER_SIZE (128U)
-#define APP_USART_CMD_NOTIFY_RX_IDLE (1UL << 31)
-#define APP_USART_CMD_NOTIFY_RX_FULL (1UL << 30)
-#define APP_USART_CMD_NOTIFY_TX_DONE (1UL << 29)
-#define APP_USART_CMD_NOTIFY_LOG     (1UL << 28)
-#define APP_USART_CMD_RX_LEN_MASK    (0x0000FFFFUL)
-#define APP_USART_CMD_TX_USE_DMA     (0U)
-#define APP_USART_CMD_TX_DMA_SIZE    (256U)
-#define APP_USART_CMD_TX_TIMEOUT_MS  (100U)
-#define APP_USART_LOG_SLOT_SIZE      (512U)
-#define APP_DATA_SORT_WINDOW         (10U)
-#define APP_SD_BLOCK_SIZE            (16U * 1024U)
-#define APP_ASCII_LINE_SIZE          (384U)
-#define APP_KEY_LONG_PRESS_MS        (200U)
+#define APP_GNSS_RX_BUFFER_SIZE          (1024U)
+#define APP_USART_CMD_RX_BUFFER_SIZE     (128U)
+#define APP_USART_CMD_NOTIFY_RX_IDLE     (1UL << 31)
+#define APP_USART_CMD_NOTIFY_RX_FULL     (1UL << 30)
+#define APP_USART_CMD_NOTIFY_TX_DONE     (1UL << 29)
+#define APP_USART_CMD_NOTIFY_LOG         (1UL << 28)
+#define APP_USART_CMD_RX_LEN_MASK        (0x0000FFFFUL)
+#define APP_USART_CMD_TX_USE_DMA         (0U)
+#define APP_USART_CMD_TX_DMA_SIZE        (256U)
+#define APP_USART_CMD_TX_TIMEOUT_MS      (100U)
+#define APP_USART_LOG_SLOT_SIZE          (512U)
+#define APP_USART_LOSS_LOG_SLOT_SIZE     (1024U)
+#define APP_DATA_SORT_WINDOW             (10U)
+#define APP_SD_BLOCK_SIZE                (16U * 1024U)
+#define APP_ASCII_LINE_SIZE              (384U)
+#define APP_KEY_SHORT_PRESS_MS           (1000U)
+#define APP_KEY_LONG_PRESS_MS            (2000U)
 #define APP_SUPPRESS_SD_WRITE_ERROR_LOGS (1U)
+#define APP_LED_LOSS_CMD_QUEUE_LEN       (4U)
+#define APP_KEY_EVENT_QUEUE_LEN          (4U)
 
 #if APP_SUPPRESS_SD_WRITE_ERROR_LOGS
 static void app_log_sd_error(const char *fmt, ...)
@@ -53,7 +58,7 @@ static void app_log_sd_warn(const char *fmt, ...)
 #define app_log_sd_warn(...)  app_log_warn(__VA_ARGS__)
 #endif
 
-#define GNSS_MSG_ID_BESTNAV          (0x0846U)
+#define GNSS_MSG_ID_BESTNAV (0x0846U)
 
 typedef enum {
     APP_SD_BLOCK_MAIN   = 0,
@@ -74,11 +79,28 @@ typedef enum {
     APP_USART_LOG_SLOT_DATA,
     APP_USART_LOG_SLOT_SD,
     APP_USART_LOG_SLOT_KEY,
+    APP_USART_LOG_SLOT_LOSS,
     APP_USART_LOG_SLOT_COUNT,
 } AppUsartLogSlotId;
 
+typedef enum {
+    APP_LED_STATE_CONFIG = 0,
+    APP_LED_STATE_NORMAL,
+    APP_LED_STATE_LOSS_DISPLAY,
+} AppLedState;
+
+typedef enum {
+    APP_KEY_EVENT_SHORT_PRESS = 0,
+    APP_KEY_EVENT_LONG_PRESS,
+} AppKeyEventType;
+
 typedef struct {
-    uint8_t buffer[APP_USART_LOG_SLOT_SIZE];
+    AppKeyEventType type;
+} AppKeyEventMsg;
+
+typedef struct {
+    uint8_t *buffer;
+    size_t capacity;
     size_t head;
     size_t tail;
     size_t used;
@@ -173,6 +195,8 @@ static uint8_t g_usart_cmd_tx_dma_buffer[APP_USART_CMD_TX_DMA_SIZE];
 static uint16_t g_usart_cmd_tx_dma_len;
 static bool g_usart_cmd_tx_dma_pending;
 static volatile bool g_usart_cmd_tx_dma_busy;
+static uint8_t g_usart_log_slot_storage[APP_USART_LOG_SLOT_COUNT][APP_USART_LOG_SLOT_SIZE];
+static uint8_t g_usart_loss_log_slot_storage[APP_USART_LOSS_LOG_SLOT_SIZE];
 
 static uint8_t g_sd_main_block[APP_SD_BLOCK_SIZE];
 static uint8_t g_sd_backup_block[APP_SD_BLOCK_SIZE];
@@ -187,6 +211,13 @@ static AppSdFifo g_uwb_sd_fifo;
 static StaticSemaphore_t g_uwb_sd_fifo_mutex_ctrl;
 static SemaphoreHandle_t g_uwb_sd_fifo_mutex;
 static bool g_uwb_sd_ready;
+
+static StaticQueue_t g_led_loss_cmd_queue_ctrl;
+static uint8_t g_led_loss_cmd_queue_buf[APP_LED_LOSS_CMD_QUEUE_LEN * sizeof(LedLossCmd)];
+static QueueHandle_t g_led_loss_cmd_queue;
+static StaticQueue_t g_key_event_queue_ctrl;
+static uint8_t g_key_event_queue_buf[APP_KEY_EVENT_QUEUE_LEN * sizeof(AppKeyEventMsg)];
+static QueueHandle_t g_key_event_queue;
 
 static uint32_t sd_ready_bit(AppSdBlockId id)
 {
@@ -235,6 +266,12 @@ void AppTasks_LogInit(void)
     for (uint32_t i = 0; i < APP_USART_LOG_SLOT_COUNT; ++i) {
         AppUsartLogSlot *slot = &g_usart_log_slots[i];
         memset(slot, 0, sizeof(*slot));
+        slot->buffer   = g_usart_log_slot_storage[i];
+        slot->capacity = APP_USART_LOG_SLOT_SIZE;
+        if (i == APP_USART_LOG_SLOT_LOSS) {
+            slot->buffer   = g_usart_loss_log_slot_storage;
+            slot->capacity = APP_USART_LOSS_LOG_SLOT_SIZE;
+        }
         slot->mutex = xSemaphoreCreateMutexStatic(&slot->mutex_ctrl);
         if (slot->mutex == NULL) {
             return;
@@ -275,7 +312,8 @@ static void usart_log_slot_give(AppUsartLogSlot *slot)
 
 static void usart_log_slot_drop_oldest(AppUsartLogSlot *slot, size_t len)
 {
-    if (slot == NULL || len == 0U) {
+    if (slot == NULL || slot->buffer == NULL || slot->capacity == 0U ||
+        len == 0U) {
         return;
     }
 
@@ -283,7 +321,7 @@ static void usart_log_slot_drop_oldest(AppUsartLogSlot *slot, size_t len)
         len = slot->used;
     }
 
-    slot->tail = (slot->tail + len) % APP_USART_LOG_SLOT_SIZE;
+    slot->tail = (slot->tail + len) % slot->capacity;
     slot->used -= len;
     slot->dropped += (uint32_t)len;
 }
@@ -298,21 +336,22 @@ static bool usart_log_slot_write(AppUsartLogSlotId id,
     }
 
     AppUsartLogSlot *slot = &g_usart_log_slots[id];
-    if (!usart_log_slot_take(slot)) {
+    if (slot->buffer == NULL || slot->capacity == 0U ||
+        !usart_log_slot_take(slot)) {
         return false;
     }
 
-    if (len > APP_USART_LOG_SLOT_SIZE) {
-        data += len - APP_USART_LOG_SLOT_SIZE;
-        len = APP_USART_LOG_SLOT_SIZE;
+    if (len > slot->capacity) {
+        data += len - slot->capacity;
+        len = slot->capacity;
     }
 
-    size_t free_len = APP_USART_LOG_SLOT_SIZE - slot->used;
+    size_t free_len = slot->capacity - slot->used;
     if (len > free_len) {
         usart_log_slot_drop_oldest(slot, len - free_len);
     }
 
-    size_t first = APP_USART_LOG_SLOT_SIZE - slot->head;
+    size_t first = slot->capacity - slot->head;
     if (first > len) {
         first = len;
     }
@@ -323,7 +362,7 @@ static bool usart_log_slot_write(AppUsartLogSlotId id,
         memcpy(slot->buffer, data + first, second);
     }
 
-    slot->head = (slot->head + len) % APP_USART_LOG_SLOT_SIZE;
+    slot->head = (slot->head + len) % slot->capacity;
     slot->used += len;
 
     usart_log_slot_give(slot);
@@ -341,13 +380,14 @@ static size_t usart_log_slot_read(AppUsartLogSlotId id,
     }
 
     AppUsartLogSlot *slot = &g_usart_log_slots[id];
-    if (!usart_log_slot_take(slot)) {
+    if (slot->buffer == NULL || slot->capacity == 0U ||
+        !usart_log_slot_take(slot)) {
         return 0U;
     }
 
     size_t len = slot->used < max_len ? slot->used : max_len;
     if (len > 0U) {
-        size_t first = APP_USART_LOG_SLOT_SIZE - slot->tail;
+        size_t first = slot->capacity - slot->tail;
         if (first > len) {
             first = len;
         }
@@ -358,7 +398,7 @@ static size_t usart_log_slot_read(AppUsartLogSlotId id,
             memcpy(data + first, slot->buffer, second);
         }
 
-        slot->tail = (slot->tail + len) % APP_USART_LOG_SLOT_SIZE;
+        slot->tail = (slot->tail + len) % slot->capacity;
         slot->used -= len;
     }
 
@@ -393,6 +433,10 @@ static AppUsartLogSlotId usart_log_slot_for_current_task(void)
     }
 
     const char *name = pcTaskGetName(NULL);
+    if (name != NULL && strcmp(name, "uwbLoss") == 0) {
+        return APP_USART_LOG_SLOT_LOSS;
+    }
+
     if (name != NULL && strncmp(name, "uwb", 3U) == 0) {
         return APP_USART_LOG_SLOT_UWB;
     }
@@ -414,6 +458,92 @@ bool AppTasks_LogWriteText(const char *text, size_t len)
 bool AppTasks_LogWriteSd(const char *text, size_t len)
 {
     return uwb_sd_fifo_write((const uint8_t *)text, len);
+}
+
+static bool init_led_loss_queue(void)
+{
+    if (g_led_loss_cmd_queue == NULL) {
+        g_led_loss_cmd_queue = xQueueCreateStatic(
+            APP_LED_LOSS_CMD_QUEUE_LEN,
+            sizeof(LedLossCmd),
+            g_led_loss_cmd_queue_buf,
+            &g_led_loss_cmd_queue_ctrl);
+    }
+
+    return g_led_loss_cmd_queue != NULL;
+}
+
+static bool init_key_event_queue(void)
+{
+    if (g_key_event_queue == NULL) {
+        g_key_event_queue = xQueueCreateStatic(
+            APP_KEY_EVENT_QUEUE_LEN,
+            sizeof(AppKeyEventMsg),
+            g_key_event_queue_buf,
+            &g_key_event_queue_ctrl);
+    }
+
+    return g_key_event_queue != NULL;
+}
+
+bool AppTasks_SendLedLossCmd(const LedLossCmd *cmd)
+{
+    if (g_led_loss_cmd_queue == NULL || cmd == NULL) {
+        return false;
+    }
+
+    return xQueueSend(g_led_loss_cmd_queue, cmd, 0) == pdPASS;
+}
+
+static bool app_key_publish_event(AppKeyEventType type)
+{
+    AppKeyEventMsg event = {
+        .type = type,
+    };
+
+    if (g_key_event_queue == NULL) {
+        return false;
+    }
+
+    return xQueueSend(g_key_event_queue, &event, 0) == pdPASS;
+}
+
+static void app_led_loss_queue_reset(void)
+{
+    if (g_led_loss_cmd_queue != NULL) {
+        (void)xQueueReset(g_led_loss_cmd_queue);
+    }
+}
+
+static const char *app_led_state_name(AppLedState state)
+{
+    switch (state) {
+        case APP_LED_STATE_CONFIG:
+            return "CONFIG";
+
+        case APP_LED_STATE_NORMAL:
+            return "NORMAL";
+
+        case APP_LED_STATE_LOSS_DISPLAY:
+            return "LOSS_DISPLAY";
+
+        default:
+            return "UNKNOWN";
+    }
+}
+
+static const char *app_key_event_type_name(AppKeyEventType type)
+{
+    switch (type) {
+        case APP_KEY_EVENT_SHORT_PRESS:
+            return "SHORT_PRESS";
+
+        case APP_KEY_EVENT_LONG_PRESS:
+            return "LONG_PRESS";
+
+        default:
+            return "UNKNOWN";
+    }
 }
 
 static bool init_sd_fifo(void)
@@ -442,7 +572,7 @@ static bool init_sd_fifo(void)
     g_uwb_sd_fifo.block[APP_SD_BLOCK_MAIN]   = g_uwb_sd_main_block;
     g_uwb_sd_fifo.block[APP_SD_BLOCK_BACKUP] = g_uwb_sd_backup_block;
     g_uwb_sd_fifo.active                     = APP_SD_BLOCK_MAIN;
-    g_uwb_sd_ready = false;
+    g_uwb_sd_ready                           = false;
 
     return true;
 }
@@ -587,8 +717,7 @@ static void notify_uwb_sd_block_ready(AppSdBlockId id)
     if (g_sd_writer_task == NULL) {
         return;
     }
-    uint32_t bit = (id == APP_SD_BLOCK_MAIN) ?
-                   APP_UWB_SD_NOTIFY_MAIN : APP_UWB_SD_NOTIFY_BACKUP;
+    uint32_t bit = (id == APP_SD_BLOCK_MAIN) ? APP_UWB_SD_NOTIFY_MAIN : APP_UWB_SD_NOTIFY_BACKUP;
     (void)xTaskNotify(g_sd_writer_task, bit, eSetBits);
 }
 
@@ -625,9 +754,9 @@ static bool uwb_sd_fifo_write(const uint8_t *data, size_t len)
             g_uwb_sd_fifo.len[active] += copied;
 
             if (g_uwb_sd_fifo.len[active] == APP_SD_BLOCK_SIZE) {
-                ready_id                     = (AppSdBlockId)active;
-                g_uwb_sd_fifo.ready[active]  = true;
-                has_ready                    = true;
+                ready_id                    = (AppSdBlockId)active;
+                g_uwb_sd_fifo.ready[active] = true;
+                has_ready                   = true;
 
                 if (!uwb_sd_fifo_switch_to_free()) {
                     no_free = true;
@@ -642,7 +771,7 @@ static bool uwb_sd_fifo_write(const uint8_t *data, size_t len)
         }
 
         if (no_free) {
-            return false;  /* 静默丢弃, 避免递归日志 */
+            return false; /* 静默丢弃, 避免递归日志 */
         }
 
         src += copied;
@@ -703,8 +832,7 @@ static uint32_t uwb_sd_fifo_ready_bits(void)
     }
     for (uint32_t id = APP_SD_BLOCK_MAIN; id <= APP_SD_BLOCK_BACKUP; ++id) {
         if (g_uwb_sd_fifo.ready[id] && !g_uwb_sd_fifo.locked[id]) {
-            bits |= (id == APP_SD_BLOCK_MAIN) ?
-                    APP_UWB_SD_NOTIFY_MAIN : APP_UWB_SD_NOTIFY_BACKUP;
+            bits |= (id == APP_SD_BLOCK_MAIN) ? APP_UWB_SD_NOTIFY_MAIN : APP_UWB_SD_NOTIFY_BACKUP;
         }
     }
     uwb_sd_fifo_give();
@@ -803,9 +931,9 @@ static size_t format_node_ascii(const AppDataNode *node,
         return 0;
     }
 
-    uint32_t week = ts->utc_valid ? ts->local_utc.week : 0U;
-    uint32_t week_ms = ts->utc_valid ? ts->local_utc.week_ms : 0U;
-    uint32_t week_sec = week_ms / 1000U;
+    uint32_t week        = ts->utc_valid ? ts->local_utc.week : 0U;
+    uint32_t week_ms     = ts->utc_valid ? ts->local_utc.week_ms : 0U;
+    uint32_t week_sec    = week_ms / 1000U;
     uint32_t week_ms_rem = week_ms % 1000U;
 
     switch (node->source) {
@@ -1019,7 +1147,11 @@ bool AppTasks_CreateAll(AppMode mode)
     BspLed_Init();
     (void)ConfigService_Load();
 
-    if (!DataService_Init() || !init_sd_fifo()) {
+    if (!DataService_Init() ||
+        !init_sd_fifo() ||
+        !init_led_loss_queue() ||
+        !init_key_event_queue() ||
+        !UwbLossTest_Init()) {
         return false;
     }
 
@@ -1058,6 +1190,11 @@ bool AppTasks_CreateAll(AppMode mode)
         .stack_size = 512U * 4U,
         .priority   = osPriorityLow,
     };
+    const osThreadAttr_t loss_attr = {
+        .name       = "uwbLoss",
+        .stack_size = 1024U * 4U,
+        .priority   = osPriorityNormal,
+    };
     const osThreadAttr_t cmd_attr = {
         .name       = "usartCMD",
         .stack_size = 768U * 4U,
@@ -1070,6 +1207,11 @@ bool AppTasks_CreateAll(AppMode mode)
     (void)osThreadNew(AppLedTask, NULL, &led_attr);
     (void)osThreadNew(AppKeyTask, NULL, &key_attr);
     (void)osThreadNew(AppUsartCmdTask, NULL, &cmd_attr);
+
+    if (!UwbLossTest_StartThread(&loss_attr)) {
+        app_log_error("UWB loss test start failed");
+        return false;
+    }
 
     if (mode != APP_MODE_CONFIG) {
         if (!UwbStack_StartFromConfig()) {
@@ -1176,9 +1318,9 @@ void AppSdWriterTask(void *argument)
 
     FIL file;
     FIL uwb_log_file;
-    bool mounted         = false;
-    bool opened          = false;
-    bool uwb_log_opened  = false;
+    bool mounted        = false;
+    bool opened         = false;
+    bool uwb_log_opened = false;
 
     g_sd_writer_task = xTaskGetCurrentTaskHandle();
 
@@ -1247,7 +1389,6 @@ void AppSdWriterTask(void *argument)
                 sd_fifo_unlock_block((AppSdBlockId)id);
             } else {
                 (void)f_sync(&file);
-                BspLed_Toggle(BSP_LED_0);
                 sd_fifo_release_block((AppSdBlockId)id);
             }
 
@@ -1259,8 +1400,7 @@ void AppSdWriterTask(void *argument)
         /* ---- 处理 UWB 日志 FIFO ---- */
         if (uwb_log_opened) {
             for (uint32_t id = APP_SD_BLOCK_MAIN; id <= APP_SD_BLOCK_BACKUP; ++id) {
-                uint32_t uwb_bit = (id == APP_SD_BLOCK_MAIN) ?
-                                   APP_UWB_SD_NOTIFY_MAIN : APP_UWB_SD_NOTIFY_BACKUP;
+                uint32_t uwb_bit = (id == APP_SD_BLOCK_MAIN) ? APP_UWB_SD_NOTIFY_MAIN : APP_UWB_SD_NOTIFY_BACKUP;
 
                 if ((notify_bits & uwb_bit) == 0U) {
                     continue;
@@ -1297,20 +1437,127 @@ void AppKeyTask(void *argument)
     BspKey_Init(&key);
 
     for (;;) {
-        BspKeyEvent evt = BspKey_Poll(&key, APP_KEY_LONG_PRESS_MS);
-        if (evt == BSP_KEY_EVENT_SHORT_PRESS && g_app_mode == APP_MODE_CONFIG) {
-            const AppConfig *cfg = ConfigService_Get();
-            if (cfg != NULL) {
-                app_log_info("CFG pan=0x%04X short=0x%04X role=%u",
-                             cfg->pan_id, cfg->short_addr, cfg->role);
-            }
-        } else if (evt == BSP_KEY_EVENT_LONG_PRESS) {
-            app_log_warn("key long press reset");
-            osDelay(20U);
-            NVIC_SystemReset();
+        AppKeyEventType type;
+        bool publish = false;
+
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10U));
+
+        BspKeyEvent evt = BspKey_Poll(&key,
+                                      APP_KEY_SHORT_PRESS_MS,
+                                      APP_KEY_LONG_PRESS_MS);
+        switch (evt) {
+            case BSP_KEY_EVENT_SHORT_PRESS:
+                type = APP_KEY_EVENT_SHORT_PRESS;
+                publish = true;
+                break;
+
+            case BSP_KEY_EVENT_LONG_PRESS:
+                type = APP_KEY_EVENT_LONG_PRESS;
+                publish = true;
+                break;
+
+            default:
+                break;
         }
 
-        osDelay(10U);
+        if (publish) {
+            bool queued = app_key_publish_event(type);
+            app_log_info("KEY event=%s queued=%u",
+                         app_key_event_type_name(type),
+                         queued ? 1U : 0U);
+        }
+    }
+}
+
+static void app_led_set_loss_bar(uint8_t rate)
+{
+    BspLed_Set(BSP_LED_0, rate >= 80U);
+    BspLed_Set(BSP_LED_1, rate >= 90U);
+    BspLed_Set(BSP_LED_2, rate >= 95U);
+}
+
+static void app_led_apply_loss_cmd(const LedLossCmd *cmd)
+{
+    if (cmd == NULL) {
+        return;
+    }
+
+    switch (cmd->mode) {
+        case LED_LOSS_MODE_CONFIRM:
+            BspLed_Set(BSP_LED_0, cmd->led0 != 0U);
+            BspLed_Set(BSP_LED_1, cmd->led1 != 0U);
+            BspLed_Set(BSP_LED_2, cmd->led2 != 0U);
+            break;
+
+        case LED_LOSS_MODE_RATE:
+            BspLed_Set(BSP_LED_0, cmd->led0 != 0U);
+            BspLed_Set(BSP_LED_1, cmd->led1 != 0U);
+            BspLed_Set(BSP_LED_2, cmd->led2 != 0U);
+            break;
+
+        case LED_LOSS_MODE_OFF:
+        default:
+            app_led_set_loss_bar(0U);
+            break;
+    }
+}
+
+static void app_led_enter_normal_state(AppLedState *state)
+{
+    if (state != NULL) {
+        *state = APP_LED_STATE_NORMAL;
+    }
+
+    app_led_loss_queue_reset();
+    app_led_set_loss_bar(0U);
+}
+
+static void app_led_enter_loss_state(AppLedState *state)
+{
+    if (state != NULL) {
+        *state = APP_LED_STATE_LOSS_DISPLAY;
+    }
+
+    app_led_loss_queue_reset();
+}
+
+static void app_led_handle_key_event(AppLedState *state,
+                                     const AppKeyEventMsg *event)
+{
+    if (state == NULL || event == NULL) {
+        return;
+    }
+
+    if (*state == APP_LED_STATE_CONFIG) {
+        app_log_info("LED key=%s ignored state=%s",
+                     app_key_event_type_name(event->type),
+                     app_led_state_name(*state));
+        return;
+    }
+
+    switch (event->type) {
+        case APP_KEY_EVENT_SHORT_PRESS:
+            if (*state == APP_LED_STATE_LOSS_DISPLAY) {
+                app_led_enter_normal_state(state);
+                app_log_info("LED key=%s state=%s",
+                             app_key_event_type_name(event->type),
+                             app_led_state_name(*state));
+            } else {
+                app_led_enter_loss_state(state);
+                app_log_info("LED key=%s state=%s",
+                             app_key_event_type_name(event->type),
+                             app_led_state_name(*state));
+            }
+            break;
+
+        case APP_KEY_EVENT_LONG_PRESS:
+            app_log_info("LED key=%s ignored state=%s",
+                         app_key_event_type_name(event->type),
+                         app_led_state_name(*state));
+            break;
+
+        default:
+            break;
     }
 }
 
@@ -1320,17 +1567,43 @@ void AppLedTask(void *argument)
 
     g_led_task = xTaskGetCurrentTaskHandle();
 
-    uint32_t index = 0;
+    uint32_t index        = 0;
+    uint32_t heartbeat_ms = HAL_GetTick();
+    AppLedState state     = (g_app_mode == APP_MODE_CONFIG) ?
+                            APP_LED_STATE_CONFIG : APP_LED_STATE_NORMAL;
+
     for (;;) {
-        if (g_app_mode == APP_MODE_CONFIG) {
+        AppKeyEventMsg event;
+        while (g_key_event_queue != NULL &&
+               xQueueReceive(g_key_event_queue, &event, 0) == pdPASS) {
+            app_led_handle_key_event(&state, &event);
+        }
+
+        if (state == APP_LED_STATE_CONFIG) {
             BspLed_AllOff();
             BspLed_Set((BspLedId)(index % BSP_LED_COUNT), true);
             index++;
             osDelay(200U);
-        } else {
-            BspLed_Toggle(BSP_LED_3);
-            osDelay(500U); // 表示正常工作
+            continue;
         }
+
+        if (state == APP_LED_STATE_LOSS_DISPLAY) {
+            LedLossCmd cmd;
+            while (g_led_loss_cmd_queue != NULL &&
+                   xQueueReceive(g_led_loss_cmd_queue, &cmd, 0) == pdPASS) {
+                app_led_apply_loss_cmd(&cmd);
+            }
+        } else {
+            app_led_set_loss_bar(0U);
+        }
+
+        uint32_t now = HAL_GetTick();
+        if ((uint32_t)(now - heartbeat_ms) >= 500U) {
+            BspLed_Toggle(BSP_LED_3);
+            heartbeat_ms = now;
+        }
+
+        osDelay(20U);
     }
 }
 
