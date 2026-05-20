@@ -71,12 +71,15 @@ typedef enum {
     LINK_CMD_SEND_FRAG,          /* Anchor: 发送分片帧 (预载到 pending) */
     LINK_CMD_SEND_ACK,           /* Anchor: 发送快速应答确认 */
     LINK_CMD_SESSION_RESET,      /* Anchor: 重置数据会话 */
+    LINK_CMD_PROX_DISCOVERY,     /* Anchor: active prox discovery window */
+    LINK_CMD_RING_INIT_NOTIFY,   /* Anchor: unicast ring init token */
 } UwbLinkCmdType;
 
 typedef struct {
     UwbLinkCmdType type;
     int8_t   slot_index;       /* -1 = 无 slot */
     uint16_t target_id;        /* APP 选择的对端短地址 */
+    uint16_t origin_id;
     uint16_t session_id;
     uint8_t  ctrl_type;        /* LINK_CMD_SEND_CTRL 用 */
     uint8_t  frag_id;          /* LINK_CMD_SEND_FRAG 用 */

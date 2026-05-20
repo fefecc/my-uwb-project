@@ -29,6 +29,8 @@ typedef enum {
     UWB_LINK_APP_EVT_DATA_COMPLETE,
     UWB_LINK_APP_EVT_DATA_FAIL,
     UWB_LINK_APP_EVT_DATA_SENT,
+    UWB_LINK_APP_EVT_RING_INIT_NOTIFY,
+    UWB_LINK_APP_EVT_RING_INIT_ACKED,
 } UwbLinkAppEventType;
 
 typedef struct {
@@ -55,6 +57,11 @@ typedef struct {
             uint16_t session_id;
             uint8_t  frag_id;
         } data_sent;
+        struct {
+            uint16_t src_id;
+            uint16_t origin_id;
+            uint16_t seq;
+        } ring_init;
     } data;
 } UwbLinkAppEvent;
 

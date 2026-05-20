@@ -26,6 +26,8 @@ typedef enum {
     UWB_FUNC_APP_DATA_FRAG  = 0x71,
     UWB_FUNC_APP_DATA_CTRL  = 0x72,
     UWB_FUNC_APP_DATA_CTRL_RESP = 0x73,
+    UWB_FUNC_RING_INIT_NOTIFY = 0x80,
+    UWB_FUNC_RING_INIT_ACK    = 0x81,
 } UwbFuncCode;
 
 /* ====== plan-v4 数据交互帧常量 ====== */

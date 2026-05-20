@@ -20,6 +20,7 @@
 #include "../service/storage_service.h"
 #include "../service/time_service.h"
 #include "../UWB/uwb_loss_test.h"
+#include "../UWB/uwb_app.h"
 #include "../UWB/uwb_stack.h"
 
 #define APP_GNSS_RX_BUFFER_SIZE          (1024U)
@@ -218,6 +219,9 @@ static QueueHandle_t g_led_loss_cmd_queue;
 static StaticQueue_t g_key_event_queue_ctrl;
 static uint8_t g_key_event_queue_buf[APP_KEY_EVENT_QUEUE_LEN * sizeof(AppKeyEventMsg)];
 static QueueHandle_t g_key_event_queue;
+static volatile bool g_anchor_led_local_init;
+static volatile bool g_anchor_led_global_init;
+static volatile bool g_anchor_led_notify_init;
 
 static uint32_t sd_ready_bit(AppSdBlockId id)
 {
@@ -241,6 +245,41 @@ static const char *data_source_name(AppDataSource source)
         default:
             return "UNKNOWN";
     }
+}
+
+static AppDeviceRole app_current_role(void)
+{
+    const AppConfig *cfg = ConfigService_Get();
+
+    if (cfg == NULL || !ConfigService_IsValid(cfg)) {
+        cfg = ConfigService_GetDefaults();
+    }
+
+    if (cfg == NULL || !ConfigService_IsValid(cfg)) {
+        return APP_ROLE_ANCHOR;
+    }
+
+    return (AppDeviceRole)cfg->role;
+}
+
+static uint16_t app_current_short_addr(void)
+{
+    const AppConfig *cfg = ConfigService_Get();
+
+    if (cfg == NULL || !ConfigService_IsValid(cfg)) {
+        cfg = ConfigService_GetDefaults();
+    }
+
+    if (cfg == NULL || !ConfigService_IsValid(cfg)) {
+        return 0U;
+    }
+
+    return cfg->short_addr;
+}
+
+static bool app_loss_test_enabled(void)
+{
+    return app_current_role() == APP_ROLE_TAG;
 }
 
 static bool scheduler_running(void)
@@ -493,6 +532,21 @@ bool AppTasks_SendLedLossCmd(const LedLossCmd *cmd)
     }
 
     return xQueueSend(g_led_loss_cmd_queue, cmd, 0) == pdPASS;
+}
+
+void AppTasks_SetAnchorLocalInitLed(bool on)
+{
+    g_anchor_led_local_init = on;
+}
+
+void AppTasks_SetAnchorGlobalInitLed(bool on)
+{
+    g_anchor_led_global_init = on;
+}
+
+void AppTasks_SetAnchorNotifyInitLed(bool on)
+{
+    g_anchor_led_notify_init = on;
 }
 
 static bool app_key_publish_event(AppKeyEventType type)
@@ -1147,11 +1201,13 @@ bool AppTasks_CreateAll(AppMode mode)
     BspLed_Init();
     (void)ConfigService_Load();
 
+    bool loss_test_enabled = app_loss_test_enabled();
+
     if (!DataService_Init() ||
         !init_sd_fifo() ||
-        !init_led_loss_queue() ||
         !init_key_event_queue() ||
-        !UwbLossTest_Init()) {
+        (loss_test_enabled &&
+         (!init_led_loss_queue() || !UwbLossTest_Init()))) {
         return false;
     }
 
@@ -1208,7 +1264,7 @@ bool AppTasks_CreateAll(AppMode mode)
     (void)osThreadNew(AppKeyTask, NULL, &key_attr);
     (void)osThreadNew(AppUsartCmdTask, NULL, &cmd_attr);
 
-    if (!UwbLossTest_StartThread(&loss_attr)) {
+    if (loss_test_enabled && !UwbLossTest_StartThread(&loss_attr)) {
         app_log_error("UWB loss test start failed");
         return false;
     }
@@ -1461,6 +1517,24 @@ void AppKeyTask(void *argument)
         }
 
         if (publish) {
+            if (type == APP_KEY_EVENT_SHORT_PRESS &&
+                app_current_role() == APP_ROLE_ANCHOR) {
+                uint16_t self_addr = app_current_short_addr();
+                bool requested = UwbApp_RequestProxBuild();
+
+                char line[128];
+                int n = snprintf(line, sizeof(line),
+                                 "[PROX] key short self=0x%04X request=%u\r\n",
+                                 self_addr,
+                                 requested ? 1U : 0U);
+                if (n > 0) {
+                    AppTasks_LogWriteText(line, bounded_strlen(line, sizeof(line)));
+                }
+                app_log_info("KEY anchor prox_build request=%u self=0x%04X",
+                             requested ? 1U : 0U,
+                             self_addr);
+            }
+
             bool queued = app_key_publish_event(type);
             app_log_info("KEY event=%s queued=%u",
                          app_key_event_type_name(type),
@@ -1502,6 +1576,13 @@ static void app_led_apply_loss_cmd(const LedLossCmd *cmd)
     }
 }
 
+static void app_led_apply_anchor_state(void)
+{
+    BspLed_Set(BSP_LED_0, g_anchor_led_global_init);
+    BspLed_Set(BSP_LED_1, g_anchor_led_local_init);
+    BspLed_Set(BSP_LED_2, g_anchor_led_notify_init);
+}
+
 static void app_led_enter_normal_state(AppLedState *state)
 {
     if (state != NULL) {
@@ -1537,6 +1618,14 @@ static void app_led_handle_key_event(AppLedState *state,
 
     switch (event->type) {
         case APP_KEY_EVENT_SHORT_PRESS:
+            if (!app_loss_test_enabled()) {
+                app_log_info("LED key=%s ignored role=%u state=%s",
+                             app_key_event_type_name(event->type),
+                             (unsigned)app_current_role(),
+                             app_led_state_name(*state));
+                break;
+            }
+
             if (*state == APP_LED_STATE_LOSS_DISPLAY) {
                 app_led_enter_normal_state(state);
                 app_log_info("LED key=%s state=%s",
@@ -1593,6 +1682,8 @@ void AppLedTask(void *argument)
                    xQueueReceive(g_led_loss_cmd_queue, &cmd, 0) == pdPASS) {
                 app_led_apply_loss_cmd(&cmd);
             }
+        } else if (app_current_role() == APP_ROLE_ANCHOR) {
+            app_led_apply_anchor_state();
         } else {
             app_led_set_loss_bar(0U);
         }

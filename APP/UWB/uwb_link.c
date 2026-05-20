@@ -32,6 +32,9 @@
 #define LINK_DATA_MAX_RETRY       3U
 #define LINK_DATA_SLOT_MAX        4U
 
+#define LINK_RING_ACK_TIMEOUT_MS     20U
+#define LINK_RING_RETRY_INTERVAL_MS  10U
+
 typedef enum {
     LINK_ERR_NONE = 0,
     LINK_ERR_DISC_TIMEOUT,
@@ -43,6 +46,13 @@ typedef enum {
     LINK_DATA_WAIT_TX_DONE,
     LINK_DATA_WAIT_RX,
 } link_data_state_t;
+
+typedef enum {
+    LINK_RING_IDLE = 0,
+    LINK_RING_WAIT_TX_DONE,
+    LINK_RING_WAIT_ACK,
+    LINK_RING_WAIT_RETRY,
+} link_ring_state_t;
 
 typedef struct {
     uint32_t disc_cmd_sent_ms;
@@ -78,6 +88,23 @@ typedef struct {
     bool response_seen;
 } link_data_context_t;
 
+typedef struct {
+    link_ring_state_t state;
+    uint16_t target_id;
+    uint16_t origin_id;
+    uint16_t seq;
+    int8_t tx_slot;
+    uint16_t retry_count;
+    uint32_t started_ms;
+    uint32_t next_retry_ms;
+    bool rx_window_active;
+    bool ack_seen;
+    bool have_last_rx;
+    uint16_t last_rx_src;
+    uint16_t last_rx_origin;
+    uint16_t last_rx_seq;
+} link_ring_context_t;
+
 static link_context_t g_link;
 static TaskHandle_t   g_link_task;
 
@@ -87,6 +114,7 @@ static link_timeout_ctx_t g_to;
 
 static link_data_context_t g_data;
 static link_data_slot_entry_t g_data_slots[LINK_DATA_SLOT_MAX];
+static link_ring_context_t g_ring;
 
 /* ---- LINK → APP 事件队列 ---- */
 #define LINK_APP_EVT_QUEUE_LEN  8
@@ -111,6 +139,16 @@ static void post_app_event(const UwbLinkAppEvent *evt)
         app_log_warn("[LINK] APP_EVT_DROP type=%u", (unsigned)evt->type);
     }
 }
+
+static bool link_send_disc(bool prox_log);
+static bool start_ring_notify_cmd(const UwbLinkCmd *cmd);
+static bool ring_send_current_slot(void);
+static void ring_schedule_retry(void);
+static bool handle_ring_ack_frame(const UwbProtocolFrame *frame,
+                                  int8_t slot_index);
+static void handle_ring_rx_slot_done(const phy_evt_t *evt);
+static void handle_ring_notify_frame(const UwbProtocolFrame *frame,
+                                     int8_t slot_index);
 
 /* ================================================================
  *  DISC 帧构建
@@ -187,6 +225,40 @@ static uint16_t build_data_ctrl_resp(uint8_t *buf, size_t buf_size,
     frame.common.ext_header_len = 2U;
     frame.ext_header[0] = resp_type;
     frame.ext_header[1] = extra;
+
+    size_t tx_len = 0;
+    if (!UwbProtocol_Encode(&frame, buf, buf_size, &tx_len)) return 0;
+    return (uint16_t)tx_len;
+}
+
+static uint16_t build_ring_init_notify(uint8_t *buf, size_t buf_size,
+                                       uint16_t target_id,
+                                       uint16_t origin_id,
+                                       uint16_t ring_seq)
+{
+    UwbProtocolFrame frame;
+    UwbProtocol_InitFrame(&frame, &g_link.cfg, target_id, next_seq(),
+                          UWB_FUNC_RING_INIT_NOTIFY);
+    frame.common.ext_header_len = 4U;
+    UwbProtocol_WriteLe16(&frame.ext_header[0], origin_id);
+    UwbProtocol_WriteLe16(&frame.ext_header[2], ring_seq);
+
+    size_t tx_len = 0;
+    if (!UwbProtocol_Encode(&frame, buf, buf_size, &tx_len)) return 0;
+    return (uint16_t)tx_len;
+}
+
+static uint16_t build_ring_init_ack(uint8_t *buf, size_t buf_size,
+                                    uint16_t target_id,
+                                    uint16_t origin_id,
+                                    uint16_t ring_seq)
+{
+    UwbProtocolFrame frame;
+    UwbProtocol_InitFrame(&frame, &g_link.cfg, target_id, next_seq(),
+                          UWB_FUNC_RING_INIT_ACK);
+    frame.common.ext_header_len = 4U;
+    UwbProtocol_WriteLe16(&frame.ext_header[0], origin_id);
+    UwbProtocol_WriteLe16(&frame.ext_header[2], ring_seq);
 
     size_t tx_len = 0;
     if (!UwbProtocol_Encode(&frame, buf, buf_size, &tx_len)) return 0;
@@ -596,6 +668,20 @@ static void link_dispatch_app_cmd(const UwbLinkCmd *cmd)
         return;
     }
 
+    if (cmd->type == LINK_CMD_PROX_DISCOVERY) {
+        if (g_link.cfg.role == APP_ROLE_ANCHOR) {
+            (void)link_send_disc(true);
+        }
+        return;
+    }
+
+    if (cmd->type == LINK_CMD_RING_INIT_NOTIFY) {
+        if (g_link.cfg.role == APP_ROLE_ANCHOR) {
+            (void)start_ring_notify_cmd(cmd);
+        }
+        return;
+    }
+
     if (g_link.cfg.role == APP_ROLE_TAG) {
         if (cmd->type == LINK_CMD_SEND_CFG_REQ ||
             cmd->type == LINK_CMD_SEND_CTRL) {
@@ -816,6 +902,20 @@ static void handle_idle_rx_frame(const phy_evt_t *evt)
         return;
     }
 
+    if (frame.common.func_code == (uint8_t)UWB_FUNC_RING_INIT_ACK &&
+        frame.common.ext_header_len >= 4U) {
+        if (!handle_ring_ack_frame(&frame, evt->slot_index)) {
+            UwbSlots_Free(evt->slot_index);
+        }
+        return;
+    }
+
+    if (frame.common.func_code == (uint8_t)UWB_FUNC_RING_INIT_NOTIFY &&
+        frame.common.ext_header_len >= 4U) {
+        handle_ring_notify_frame(&frame, evt->slot_index);
+        return;
+    }
+
     if (frame.common.func_code == (uint8_t)UWB_FUNC_APP_DATA_CFG &&
         frame.common.ext_header_len >= 2) {
         UwbLinkAppEvent app_evt;
@@ -906,7 +1006,12 @@ static void link_dispatch_phy_evt(const phy_evt_t *evt)
     switch (evt->type) {
 
     case PHY_EVT_TX_DONE:
-        if (g_data.state == LINK_DATA_WAIT_TX_DONE &&
+        if (g_ring.state == LINK_RING_WAIT_TX_DONE &&
+            evt->slot_index == g_ring.tx_slot) {
+            g_ring.state = LINK_RING_WAIT_ACK;
+            g_ring.rx_window_active = true;
+            g_ring.started_ms = HAL_GetTick();
+        } else if (g_data.state == LINK_DATA_WAIT_TX_DONE &&
             evt->slot_index == g_data.tx_slot) {
             app_log_info("[LINK] DATA_TX_DONE slot=%d sess=0x%04X frag=%u",
                          (int)evt->slot_index,
@@ -925,7 +1030,9 @@ static void link_dispatch_phy_evt(const phy_evt_t *evt)
         break;
 
     case PHY_EVT_RX_SLOT_DONE:
-        if (g_data.rx_window_active) {
+        if (g_ring.rx_window_active) {
+            handle_ring_rx_slot_done(evt);
+        } else if (g_data.rx_window_active) {
             handle_data_rx_slot_done(evt);
         } else {
             handle_disc_rx_slot_done(evt);
@@ -933,6 +1040,16 @@ static void link_dispatch_phy_evt(const phy_evt_t *evt)
         break;
 
     case PHY_EVT_RX_WINDOW_END:
+        if (g_ring.rx_window_active) {
+            bool got_ack = g_ring.ack_seen;
+            g_ring.rx_window_active = false;
+            g_ring.ack_seen = false;
+            if (!got_ack && g_ring.state == LINK_RING_WAIT_ACK) {
+                ring_schedule_retry();
+            }
+            break;
+        }
+
         if (g_data.rx_window_active) {
             bool got_response = g_data.response_seen;
             g_data.rx_window_active = false;
@@ -966,7 +1083,9 @@ static void link_dispatch_phy_evt(const phy_evt_t *evt)
 
     case PHY_EVT_ERROR:
         app_log_warn("[LINK] PHY_ERROR");
-        if (g_data.state != LINK_DATA_IDLE) {
+        if (g_ring.state != LINK_RING_IDLE) {
+            ring_schedule_retry();
+        } else if (g_data.state != LINK_DATA_IDLE) {
             data_retry_or_fail();
         } else if (g_disc_outstanding > 0) {
             disc_sm_on_error(LINK_ERR_DISC_PHY_ERROR);
@@ -1005,6 +1124,20 @@ static void link_check_timeouts(void)
         disc_sm_on_error(LINK_ERR_DISC_TIMEOUT);
     }
 
+    if (g_ring.state == LINK_RING_WAIT_RETRY &&
+        (int32_t)(now - g_ring.next_retry_ms) >= 0) {
+        if (!ring_send_current_slot()) {
+            g_ring.next_retry_ms = now + LINK_RING_RETRY_INTERVAL_MS;
+        }
+    }
+
+    if ((g_ring.state == LINK_RING_WAIT_TX_DONE ||
+         g_ring.state == LINK_RING_WAIT_ACK) &&
+        g_ring.started_ms > 0 &&
+        now - g_ring.started_ms >= LINK_RING_ACK_TIMEOUT_MS) {
+        ring_schedule_retry();
+    }
+
     if (g_data.state != LINK_DATA_IDLE &&
         g_data.started_ms > 0 &&
         now - g_data.started_ms >= LINK_DATA_TIMEOUT_MS) {
@@ -1028,16 +1161,31 @@ static void link_event_monitor(void)
     link_check_timeouts();
 }
 
-static bool link_tag_send_disc(void)
+static bool link_send_disc(bool prox_log)
 {
     if (g_disc_outstanding >= DISC_PIPELINE_MAX ||
         g_data.state != LINK_DATA_IDLE ||
-        g_data.rx_window_active) {
+        g_data.rx_window_active ||
+        g_ring.state != LINK_RING_IDLE ||
+        g_ring.rx_window_active) {
+        if (prox_log) {
+            LogService_Write(APP_LOG_INFO,
+                             "[PROX] disc skip busy outstanding=%u data_state=%u rx_active=%u ring_state=%u",
+                             (unsigned)g_disc_outstanding,
+                             (unsigned)g_data.state,
+                             g_data.rx_window_active ? 1U : 0U,
+                             (unsigned)g_ring.state);
+        }
         return false;
     }
 
     int8_t idx = UwbSlots_Alloc(UWB_SLOT_LINK_OWN);
-    if (idx < 0) return false;
+    if (idx < 0) {
+        if (prox_log) {
+            LogService_Write(APP_LOG_WARN, "[PROX] disc slot alloc fail");
+        }
+        return false;
+    }
 
     uwb_slot_t *s = UwbSlots_Get(idx);
     g_link.window_id++;
@@ -1047,6 +1195,10 @@ static bool link_tag_send_disc(void)
 
     if (s->data_len == 0) {
         app_log_warn("[LINK] build DISC_REQ fail");
+        if (prox_log) {
+            LogService_Write(APP_LOG_WARN, "[PROX] disc build fail window=%u",
+                             (unsigned)g_link.window_id);
+        }
         UwbSlots_Free(idx);
         return false;
     }
@@ -1063,6 +1215,11 @@ static bool link_tag_send_disc(void)
 
     if (!UwbBuffers_SendCmd(&cmd, 0)) {
         app_log_warn("[LINK] cmd queue full");
+        if (prox_log) {
+            LogService_Write(APP_LOG_WARN, "[PROX] disc phy cmd queue full window=%u seq=%u",
+                             (unsigned)g_link.window_id,
+                             (unsigned)tx_seq);
+        }
         UwbSlots_Free(idx);
         return false;
     }
@@ -1072,7 +1229,339 @@ static bool link_tag_send_disc(void)
     g_disc_outstanding++;
     g_link.tx_slot_idx = -1;
     g_to.disc_cmd_sent_ms = HAL_GetTick();
+    if (prox_log && ((g_link.window_id % 25U) == 0U)) {
+        LogService_Write(APP_LOG_INFO,
+                         "[PROX] broadcast disc tx dst=0x%04X window=%u seq=%u slot_count=%u timeout_us=%u",
+                         (unsigned)UWB_STACK_BROADCAST_SHORT_ID,
+                         (unsigned)g_link.window_id,
+                         (unsigned)tx_seq,
+                         (unsigned)DISC_RX_SLOT_COUNT,
+                         (unsigned)UWB_PHY_RX_SLOT_TIMEOUT_US);
+    }
     return true;
+}
+
+/* ================================================================
+ *  Ring init token
+ * ================================================================ */
+
+static void ring_free_tx_slot(void)
+{
+    if (g_ring.tx_slot >= 0) {
+        UwbSlots_Free(g_ring.tx_slot);
+        g_ring.tx_slot = -1;
+    }
+}
+
+static bool ring_link_busy(void)
+{
+    return g_disc_outstanding > 0 ||
+           g_data.state != LINK_DATA_IDLE ||
+           g_data.rx_window_active;
+}
+
+static bool ring_send_current_slot(void)
+{
+    uwb_slot_t *s = UwbSlots_Get(g_ring.tx_slot);
+    if (g_ring.tx_slot < 0 || s == NULL || s->owner == UWB_SLOT_FREE) {
+        int8_t idx = UwbSlots_Alloc(UWB_SLOT_LINK_OWN);
+        if (idx < 0) {
+            app_log_warn("[RING] TX_NO_SLOT");
+            return false;
+        }
+
+        s = UwbSlots_Get(idx);
+        if (s == NULL) {
+            UwbSlots_Free(idx);
+            return false;
+        }
+
+        s->data_len = build_ring_init_notify(s->data, sizeof(s->data),
+                                             g_ring.target_id,
+                                             g_ring.origin_id,
+                                             g_ring.seq);
+        if (s->data_len == 0U) {
+            UwbSlots_Free(idx);
+            app_log_warn("[RING] REBUILD_FAIL dst=0x%04X origin=0x%04X seq=%u",
+                         g_ring.target_id,
+                         g_ring.origin_id,
+                         (unsigned)g_ring.seq);
+            return false;
+        }
+        s->frame_type = (uint8_t)UWB_FUNC_RING_INIT_NOTIFY;
+        s->src_short = g_link.cfg.short_addr;
+        g_ring.tx_slot = idx;
+    }
+
+    if (ring_link_busy()) {
+        return false;
+    }
+
+    phy_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type           = PHY_CMD_TX_FRAME;
+    cmd.slot_index     = g_ring.tx_slot;
+    cmd.tx_time        = 0;
+    cmd.has_pending_rx = true;
+    cmd.rx_timeout_us  = UWB_PHY_RX_SLOT_TIMEOUT_US;
+    cmd.rx_slot_count  = 1U;
+
+    if (!UwbBuffers_SendCmd(&cmd, 0)) {
+        app_log_warn("[RING] PHY_CMD_FULL dst=0x%04X seq=%u",
+                     g_ring.target_id, (unsigned)g_ring.seq);
+        return false;
+    }
+
+    UwbPhy_NotifyCmd();
+    g_ring.state = LINK_RING_WAIT_TX_DONE;
+    g_ring.started_ms = HAL_GetTick();
+    g_ring.rx_window_active = false;
+    g_ring.ack_seen = false;
+
+    if (g_ring.retry_count == 0U || (g_ring.retry_count % 10U) == 0U) {
+        LogService_Write(APP_LOG_INFO,
+                         "[RING] notify tx dst=0x%04X origin=0x%04X seq=%u retry=%u",
+                         g_ring.target_id,
+                         g_ring.origin_id,
+                         (unsigned)g_ring.seq,
+                         (unsigned)g_ring.retry_count);
+    }
+    return true;
+}
+
+static void ring_schedule_retry(void)
+{
+    g_ring.rx_window_active = false;
+    g_ring.ack_seen = false;
+    g_ring.retry_count++;
+    g_ring.state = LINK_RING_WAIT_RETRY;
+    g_ring.next_retry_ms = HAL_GetTick() + LINK_RING_RETRY_INTERVAL_MS;
+
+    if (g_ring.retry_count == 1U || (g_ring.retry_count % 10U) == 0U) {
+        LogService_Write(APP_LOG_WARN,
+                         "[RING] notify retry dst=0x%04X origin=0x%04X seq=%u retry=%u",
+                         g_ring.target_id,
+                         g_ring.origin_id,
+                         (unsigned)g_ring.seq,
+                         (unsigned)g_ring.retry_count);
+    }
+}
+
+static void ring_finish_acked(uint16_t ack_src)
+{
+    UwbLinkAppEvent evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.type = UWB_LINK_APP_EVT_RING_INIT_ACKED;
+    evt.data.ring_init.src_id = ack_src;
+    evt.data.ring_init.origin_id = g_ring.origin_id;
+    evt.data.ring_init.seq = g_ring.seq;
+    post_app_event(&evt);
+
+    LogService_Write(APP_LOG_INFO,
+                     "[RING] notify acked dst=0x%04X origin=0x%04X seq=%u retry=%u",
+                     ack_src,
+                     g_ring.origin_id,
+                     (unsigned)g_ring.seq,
+                     (unsigned)g_ring.retry_count);
+
+    ring_free_tx_slot();
+    g_ring.state = LINK_RING_IDLE;
+    g_ring.ack_seen = true;
+}
+
+static bool start_ring_notify_cmd(const UwbLinkCmd *cmd)
+{
+    if (cmd == NULL || cmd->type != LINK_CMD_RING_INIT_NOTIFY) {
+        return false;
+    }
+
+    if (g_ring.state != LINK_RING_IDLE || g_ring.rx_window_active) {
+        app_log_warn("[RING] BUSY drop dst=0x%04X active_dst=0x%04X",
+                     cmd->target_id, g_ring.target_id);
+        return false;
+    }
+
+    uint16_t ring_seq = cmd->session_id == 0U ? 1U : cmd->session_id;
+    g_ring.target_id = cmd->target_id;
+    g_ring.origin_id = cmd->origin_id;
+    g_ring.seq = ring_seq;
+    g_ring.tx_slot = -1;
+    g_ring.retry_count = 0U;
+    g_ring.next_retry_ms = HAL_GetTick();
+    g_ring.ack_seen = false;
+
+    int8_t idx = UwbSlots_Alloc(UWB_SLOT_LINK_OWN);
+    if (idx < 0) {
+        app_log_warn("[RING] TX_NO_SLOT dst=0x%04X", cmd->target_id);
+        g_ring.state = LINK_RING_WAIT_RETRY;
+        g_ring.next_retry_ms = HAL_GetTick() + LINK_RING_RETRY_INTERVAL_MS;
+        return true;
+    }
+
+    uwb_slot_t *s = UwbSlots_Get(idx);
+    if (s == NULL) {
+        UwbSlots_Free(idx);
+        return false;
+    }
+
+    s->data_len = build_ring_init_notify(s->data, sizeof(s->data),
+                                         cmd->target_id,
+                                         cmd->origin_id,
+                                         ring_seq);
+    if (s->data_len == 0U) {
+        UwbSlots_Free(idx);
+        app_log_warn("[RING] BUILD_FAIL dst=0x%04X origin=0x%04X seq=%u",
+                     cmd->target_id, cmd->origin_id, (unsigned)ring_seq);
+        return false;
+    }
+
+    s->frame_type = (uint8_t)UWB_FUNC_RING_INIT_NOTIFY;
+    s->src_short = g_link.cfg.short_addr;
+
+    g_ring.tx_slot = idx;
+
+    if (!ring_send_current_slot()) {
+        g_ring.state = LINK_RING_WAIT_RETRY;
+        g_ring.next_retry_ms = HAL_GetTick() + LINK_RING_RETRY_INTERVAL_MS;
+    }
+
+    return true;
+}
+
+static bool send_ring_ack(uint16_t target_id, uint16_t origin_id,
+                          uint16_t ring_seq)
+{
+    int8_t idx = UwbSlots_Alloc(UWB_SLOT_LINK_OWN);
+    if (idx < 0) {
+        app_log_warn("[RING] ACK_NO_SLOT dst=0x%04X", target_id);
+        return false;
+    }
+
+    uwb_slot_t *s = UwbSlots_Get(idx);
+    if (s == NULL) {
+        UwbSlots_Free(idx);
+        return false;
+    }
+
+    s->data_len = build_ring_init_ack(s->data, sizeof(s->data),
+                                      target_id, origin_id, ring_seq);
+    if (s->data_len == 0U) {
+        UwbSlots_Free(idx);
+        app_log_warn("[RING] ACK_BUILD_FAIL dst=0x%04X origin=0x%04X seq=%u",
+                     target_id, origin_id, (unsigned)ring_seq);
+        return false;
+    }
+    s->frame_type = (uint8_t)UWB_FUNC_RING_INIT_ACK;
+
+    phy_cmd_t pcmd;
+    memset(&pcmd, 0, sizeof(pcmd));
+    pcmd.type = PHY_CMD_TX_FRAME;
+    pcmd.slot_index = idx;
+    pcmd.has_pending_rx = false;
+
+    if (!UwbBuffers_SendCmd(&pcmd, 0)) {
+        UwbSlots_Free(idx);
+        app_log_warn("[RING] ACK_PHY_CMD_FULL dst=0x%04X", target_id);
+        return false;
+    }
+
+    g_link.misc_tx_slot_idx = idx;
+    UwbPhy_NotifyCmd();
+    LogService_Write(APP_LOG_INFO,
+                     "[RING] ack tx dst=0x%04X origin=0x%04X seq=%u",
+                     target_id, origin_id, (unsigned)ring_seq);
+    return true;
+}
+
+static bool ring_ack_matches(const UwbProtocolFrame *frame)
+{
+    if (frame == NULL ||
+        frame->common.func_code != (uint8_t)UWB_FUNC_RING_INIT_ACK ||
+        frame->common.ext_header_len < 4U) {
+        return false;
+    }
+
+    uint16_t origin_id = UwbProtocol_ReadLe16(&frame->ext_header[0]);
+    uint16_t ring_seq = UwbProtocol_ReadLe16(&frame->ext_header[2]);
+
+    return frame->mac.src16 == g_ring.target_id &&
+           origin_id == g_ring.origin_id &&
+           ring_seq == g_ring.seq;
+}
+
+static bool handle_ring_ack_frame(const UwbProtocolFrame *frame,
+                                  int8_t slot_index)
+{
+    if (g_ring.state == LINK_RING_IDLE && !g_ring.rx_window_active) {
+        return false;
+    }
+
+    if (!ring_ack_matches(frame)) {
+        return false;
+    }
+
+    if (slot_index >= 0) {
+        UwbSlots_Free(slot_index);
+    }
+    ring_finish_acked(frame->mac.src16);
+    return true;
+}
+
+static void handle_ring_rx_slot_done(const phy_evt_t *evt)
+{
+    if (evt->slot_index < 0) return;
+
+    uwb_slot_t *s = UwbSlots_Get(evt->slot_index);
+    UwbProtocolFrame frame;
+    if (s == NULL || !UwbProtocol_Decode(&frame, s->data, s->data_len) ||
+        !handle_ring_ack_frame(&frame, evt->slot_index)) {
+        UwbSlots_Free(evt->slot_index);
+    }
+}
+
+static bool ring_notify_is_duplicate(uint16_t src_id, uint16_t origin_id,
+                                     uint16_t ring_seq)
+{
+    return g_ring.have_last_rx &&
+           g_ring.last_rx_src == src_id &&
+           g_ring.last_rx_origin == origin_id &&
+           g_ring.last_rx_seq == ring_seq;
+}
+
+static void handle_ring_notify_frame(const UwbProtocolFrame *frame,
+                                     int8_t slot_index)
+{
+    uint16_t origin_id = UwbProtocol_ReadLe16(&frame->ext_header[0]);
+    uint16_t ring_seq = UwbProtocol_ReadLe16(&frame->ext_header[2]);
+    bool duplicate = ring_notify_is_duplicate(frame->mac.src16,
+                                              origin_id,
+                                              ring_seq);
+    bool ack_queued = send_ring_ack(frame->mac.src16, origin_id, ring_seq);
+
+    LogService_Write(APP_LOG_INFO,
+                     "[RING] notify rx src=0x%04X origin=0x%04X seq=%u ack=%u dup=%u",
+                     frame->mac.src16,
+                     origin_id,
+                     (unsigned)ring_seq,
+                     ack_queued ? 1U : 0U,
+                     duplicate ? 1U : 0U);
+
+    if (!duplicate) {
+        g_ring.have_last_rx = true;
+        g_ring.last_rx_src = frame->mac.src16;
+        g_ring.last_rx_origin = origin_id;
+        g_ring.last_rx_seq = ring_seq;
+
+        UwbLinkAppEvent app_evt;
+        memset(&app_evt, 0, sizeof(app_evt));
+        app_evt.type = UWB_LINK_APP_EVT_RING_INIT_NOTIFY;
+        app_evt.data.ring_init.src_id = frame->mac.src16;
+        app_evt.data.ring_init.origin_id = origin_id;
+        app_evt.data.ring_init.seq = ring_seq;
+        post_app_event(&app_evt);
+    }
+
+    UwbSlots_Free(slot_index);
 }
 
 static void link_tag_schedule(void)
@@ -1088,7 +1577,7 @@ static void link_tag_schedule(void)
         }
     }
 
-    (void)link_tag_send_disc();
+    (void)link_send_disc(false);
 }
 
 /* ================================================================
@@ -1127,6 +1616,9 @@ bool UwbLink_Init(const UwbStackConfig *cfg)
     g_data.state = LINK_DATA_IDLE;
     g_data.tx_slot = -1;
     memset(g_data_slots, 0, sizeof(g_data_slots));
+    memset(&g_ring, 0, sizeof(g_ring));
+    g_ring.state = LINK_RING_IDLE;
+    g_ring.tx_slot = -1;
 
     if (g_app_evt_queue == NULL) {
         g_app_evt_queue = xQueueCreateStatic(

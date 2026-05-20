@@ -16,6 +16,9 @@ bool AppTasks_CreateAll(AppMode mode);
 void AppTasks_LogInit(void);
 bool AppTasks_LogWriteText(const char *text, size_t len);
 bool AppTasks_LogWriteSd(const char *text, size_t len);
+void AppTasks_SetAnchorLocalInitLed(bool on);
+void AppTasks_SetAnchorGlobalInitLed(bool on);
+void AppTasks_SetAnchorNotifyInitLed(bool on);
 
 typedef enum {
     LED_LOSS_MODE_OFF = 0,

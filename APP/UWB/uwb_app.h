@@ -14,6 +14,7 @@ extern "C" {
 
 bool UwbApp_Init(const UwbStackConfig *cfg);
 bool UwbApp_StartThread(const osThreadAttr_t *attr);
+bool UwbApp_RequestProxBuild(void);
 void UwbApp_Task(void *argument);
 
 #ifdef __cplusplus
