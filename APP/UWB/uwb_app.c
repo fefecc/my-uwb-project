@@ -21,60 +21,59 @@
 #include "../task/app_tasks.h"
 #include "main.h"
 
-#define UWB_APP_DW_TIME_UNIT      (1.0 / (499.2e6 * 128.0))
-#define UWB_APP_SPEED_OF_LIGHT    (299702547.0)
-#define UWB_APP_ANT_DELAY_COMP_M  (0.0)
+#define UWB_APP_DW_TIME_UNIT     (1.0 / (499.2e6 * 128.0))
+#define UWB_APP_SPEED_OF_LIGHT   (299702547.0)
+#define UWB_APP_ANT_DELAY_COMP_M (0.0)
 
-#define TWR_MAX_ANCHORS  8
-#define TWR_DS_MAX_GAP_MS  12U
+#define TWR_MAX_ANCHORS          8
+#define TWR_DS_MAX_GAP_MS        12U
 #define TWR_DS_MAX_GAP_TICKS \
     ((uint64_t)((TIME_SERVICE_LOCAL_TICKS_PER_SECOND * TWR_DS_MAX_GAP_MS) / 1000U))
-#define TWR_DS_DROP_GAP_MS  30U
+#define TWR_DS_DROP_GAP_MS 30U
 #define TWR_DS_DROP_GAP_TICKS \
     ((uint64_t)((TIME_SERVICE_LOCAL_TICKS_PER_SECOND * TWR_DS_DROP_GAP_MS) / 1000U))
 
-#define DATA_BUF_SIZE              512U
-#define DATA_WAIT_RETRY_MS         10U
-#define DATA_SESSION_TIMEOUT_MS    5000U
-#define DATA_META_PAYLOAD_LEN      6U
-#define DATA_FRAG_CRC_LEN          2U
-#define TAG_PULL_MAX_ANCHORS       TWR_MAX_ANCHORS
-#define TAG_PULL_TRIGGER_DIST_M    (50.0)
+#define DATA_BUF_SIZE                512U
+#define DATA_WAIT_RETRY_MS           10U
+#define DATA_SESSION_TIMEOUT_MS      5000U
+#define DATA_META_PAYLOAD_LEN        6U
+#define DATA_FRAG_CRC_LEN            2U
+#define TAG_PULL_MAX_ANCHORS         TWR_MAX_ANCHORS
 
-#define PROX_ANCHOR_ID_MIN         (0x0020U)
-#define PROX_ANCHOR_ID_MAX         (0x0050U)
-#define PROX_PEER_MAX              (8U)
-#define PROX_TABLE_MAX_ENTRIES     PROX_PEER_MAX
-#define PROX_BUILD_WINDOW_MS       (3000U)
-#define PROX_DISCOVERY_INTERVAL_MS (20U)
-#define PROX_TABLE_VERSION         (1U)
-#define PROX_MIN_VALID_SAMPLES     (8U)
-#define PROX_TABLE_HEADER_LEN      (8U)
-#define PROX_TABLE_ENTRY_LEN       (35U)
-#define PROX_HEX_DUMP_ENABLED      (0U)
-#define PROX_RING_START_DELAY_MS   (30U)
-#define PROX_RING_NOTIFY_RETRY_MS  (10U)
-#define PROX_ENTRY_FLAG_VALID      (1U << 0)
-#define PROX_ENTRY_FLAG_LOW_SAMPLE (1U << 1)
-#define PROX_ENTRY_FLAG_RX_ERROR   (1U << 2)
+#define PROX_ANCHOR_ID_MIN           (0x0020U)
+#define PROX_ANCHOR_ID_MAX           (0x0050U)
+#define PROX_PEER_MAX                (8U)
+#define PROX_TABLE_MAX_ENTRIES       PROX_PEER_MAX
+#define PROX_BUILD_WINDOW_MS         (3000U)
+#define PROX_DISCOVERY_INTERVAL_MS   (20U)
+#define PROX_TABLE_VERSION           (1U)
+#define PROX_MIN_VALID_SAMPLES       (8U)
+#define PROX_TABLE_HEADER_LEN        (8U)
+#define PROX_TABLE_ENTRY_LEN         (35U)
+#define PROX_HEX_DUMP_ENABLED        (0U)
+#define PROX_RING_START_DELAY_MS     (30U)
+#define PROX_RING_NOTIFY_RETRY_MS    (10U)
+#define PROX_ENTRY_FLAG_VALID        (1U << 0)
+#define PROX_ENTRY_FLAG_LOW_SAMPLE   (1U << 1)
+#define PROX_ENTRY_FLAG_RX_ERROR     (1U << 2)
 
-#define PROX_SCORE_PACC_REF        (1024U)
-#define PROX_SCORE_FP_AMPL_REF     (4096U)
-#define PROX_SCORE_STD_NOISE_GOOD  (128U)
-#define PROX_SCORE_STD_NOISE_BAD   (1024U)
-#define PROX_SCORE_MAX_NOISE_GOOD  (256U)
-#define PROX_SCORE_MAX_NOISE_BAD   (2048U)
-#define PROX_SCORE_RX_POWER_GOOD   (-5500)
-#define PROX_SCORE_RX_POWER_BAD    (-9500)
-#define PROX_SCORE_FP_POWER_GOOD   (-6000)
-#define PROX_SCORE_FP_POWER_BAD    (-10000)
+#define PROX_SCORE_PACC_REF          (1024U)
+#define PROX_SCORE_FP_AMPL_REF       (4096U)
+#define PROX_SCORE_STD_NOISE_GOOD    (128U)
+#define PROX_SCORE_STD_NOISE_BAD     (1024U)
+#define PROX_SCORE_MAX_NOISE_GOOD    (256U)
+#define PROX_SCORE_MAX_NOISE_BAD     (2048U)
+#define PROX_SCORE_RX_POWER_GOOD     (-5500)
+#define PROX_SCORE_RX_POWER_BAD      (-9500)
+#define PROX_SCORE_FP_POWER_GOOD     (-6000)
+#define PROX_SCORE_FP_POWER_BAD      (-10000)
 #define PROX_SCORE_FP_INDEX_STD_GOOD (16U)
 #define PROX_SCORE_FP_INDEX_STD_BAD  (128U)
 
 typedef struct {
-    bool     valid;
+    bool valid;
     uint16_t anchor_id;
-    bool     have_prev_exchange;
+    bool have_prev_exchange;
     uint64_t anchor_tx_ts;
     uint64_t tag_rx_ts;
     uint64_t tag_rx_local_tick_20k;
@@ -95,8 +94,8 @@ typedef struct {
     uint16_t session_id;
     uint16_t total_len;
     uint16_t total_crc;
-    uint8_t  total_frags;
-    uint8_t  next_frag;
+    uint8_t total_frags;
+    uint8_t next_frag;
     uint32_t session_started_ms;
     uint32_t retry_at_ms;
     uint32_t cmd_count;
@@ -104,24 +103,24 @@ typedef struct {
     uint32_t wait_count;
     uint32_t frag_count;
     uint32_t drop_count;
-    bool     cmd_pending;
-    bool     completion_logged;
+    bool cmd_pending;
+    bool completion_logged;
     UwbLinkCmd current_cmd;
 } tag_data_context_t;
 
 typedef struct {
-    bool     valid;
-    bool     started;
+    bool valid;
+    bool started;
     uint16_t anchor_id;
-    double   trigger_distance_m;
+    double trigger_distance_m;
     uint32_t trigger_ms;
 } tag_pull_record_t;
 
 typedef struct {
-    bool     active;
+    bool active;
     uint16_t tag_id;
     uint16_t session_id;
-    uint8_t  total_frags;
+    uint8_t total_frags;
     uint32_t last_ms;
     uint32_t cfg_count;
     uint32_t ctrl_count;
@@ -136,7 +135,7 @@ typedef enum {
 } prox_build_state_t;
 
 typedef struct {
-    bool     valid;
+    bool valid;
     uint16_t peer_anchor;
     uint16_t sample_count;
     uint16_t valid_count;
@@ -148,12 +147,12 @@ typedef struct {
     uint32_t fp_ampl3_sum;
     uint32_t std_noise_sum;
     uint32_t max_noise_sum;
-    int32_t  rx_power_dbm_x100_sum;
-    int32_t  fp_power_dbm_x100_sum;
+    int32_t rx_power_dbm_x100_sum;
+    int32_t fp_power_dbm_x100_sum;
     uint16_t lde_status_or;
     uint32_t rx_error_flags_or;
-    double   distance_sum_m;
-    double   distance_sq_sum_m;
+    double distance_sum_m;
+    double distance_sq_sum_m;
     uint32_t last_seen_ms;
 } prox_peer_accum_t;
 
@@ -161,9 +160,9 @@ static UwbStackConfig g_app_cfg;
 static twr_anchor_record_t g_anchor_records[TWR_MAX_ANCHORS];
 static TaskHandle_t g_uwb_app_task;
 
-static uint8_t  g_tx_buf[DATA_BUF_SIZE];
+static uint8_t g_tx_buf[DATA_BUF_SIZE];
 static uint16_t g_tx_len;
-static uint8_t  g_rx_buf[DATA_BUF_SIZE];
+static uint8_t g_rx_buf[DATA_BUF_SIZE];
 static uint16_t g_rx_len;
 
 static uint16_t g_next_session_id = 1U;
@@ -244,44 +243,27 @@ static uint8_t calc_total_frags(uint16_t len)
                      UWB_DATA_FRAG_PAYLOAD_SIZE);
 }
 
-static void prox_prepare_empty_tx_table(void)
-{
-    memset(g_tx_buf, 0, sizeof(g_tx_buf));
-    g_tx_buf[0] = PROX_TABLE_VERSION;
-    g_tx_buf[1] = 0U;
-    UwbProtocol_WriteLe16(&g_tx_buf[2], g_app_cfg.short_addr);
-    UwbProtocol_WriteLe16(&g_tx_buf[4], g_prox_init_seq);
-    UwbProtocol_WriteLe16(&g_tx_buf[6], 0U);
-    UwbProtocol_WriteLe16(&g_tx_buf[6],
-                          crc16_ccitt(g_tx_buf, PROX_TABLE_HEADER_LEN));
-    g_tx_len = PROX_TABLE_HEADER_LEN;
-    g_anchor_data.total_frags = calc_total_frags(g_tx_len);
-}
-
 static void log_twr_frame(const char *mode,
                           const UwbTwrExchange *exchange,
                           const UwbRangeResult *result)
 {
     if (mode == NULL || exchange == NULL || result == NULL) return;
 
+    double tx_local_ms =
+        ((double)exchange->tag_tx_local_tick_20k * 1000.0) /
+        (double)TIME_SERVICE_LOCAL_TICKS_PER_SECOND;
     double frame_local_ms =
         ((double)result->frame_local_tick_20k * 1000.0) /
         (double)TIME_SERVICE_LOCAL_TICKS_PER_SECOND;
 
-    app_log_info("[APP] TWR_FRAME mode=%s anchor=0x%04X seq=%u slot=%u dist=%.2fm pacc=%u frame_local_ms=%.3f",
+    app_log_info("[APP] TWR_FRAME mode=%s anchor=0x%04X seq=%u dist=%.2fm pacc=%u tx_local_ms=%.3f frame_local_ms=%.3f",
                  mode,
                  exchange->anchor_id,
                  (unsigned)exchange->exchange_seq,
-                 (unsigned)exchange->response_slot_id,
                  result->distance_m,
                  (unsigned)result->quality.rx_pacc,
+                 tx_local_ms,
                  frame_local_ms);
-}
-
-static double local_tick_to_ms(uint64_t local_tick_20k)
-{
-    return ((double)local_tick_20k * 1000.0) /
-           (double)TIME_SERVICE_LOCAL_TICKS_PER_SECOND;
 }
 
 typedef enum {
@@ -332,7 +314,6 @@ static bool compute_range(const UwbTwrExchange *prev,
 {
     if (prev == NULL || cur == NULL || out == NULL ||
         prev->anchor_id != cur->anchor_id) {
-        app_log_warn("[APP] TWR_DBG_DS_FAIL reason=invalid_input");
         return false;
     }
 
@@ -343,41 +324,34 @@ static bool compute_range(const UwbTwrExchange *prev,
     double t7 = (double)cur->anchor_tx_ts;
     double t8 = (double)cur->tag_rx_ts;
 
-    double ra = (double)get_timestamp_difference_u64((uint64_t)t6, (uint64_t)t3);
-    double da = (double)get_timestamp_difference_u64((uint64_t)t5, (uint64_t)t4);
-    double rb = (double)get_timestamp_difference_u64((uint64_t)t8, (uint64_t)t5);
-    double db = (double)get_timestamp_difference_u64((uint64_t)t7, (uint64_t)t6);
+    double ra    = (double)get_timestamp_difference_u64((uint64_t)t6, (uint64_t)t3);
+    double da    = (double)get_timestamp_difference_u64((uint64_t)t5, (uint64_t)t4);
+    double rb    = (double)get_timestamp_difference_u64((uint64_t)t8, (uint64_t)t5);
+    double db    = (double)get_timestamp_difference_u64((uint64_t)t7, (uint64_t)t6);
     double denom = ra + rb + da + db;
 
     if (denom <= 0.0) {
-        app_log_warn("[APP] TWR_DBG_DS_FAIL anchor=0x%04X seq=%u reason=denom ra=%.0f da=%.0f rb=%.0f db=%.0f denom=%.0f",
-                     cur->anchor_id,
-                     (unsigned)cur->exchange_seq,
-                     ra, da, rb, db, denom);
         return false;
     }
 
     double tof_ticks = ((ra * rb) - (da * db)) / denom;
-    double distance = tof_ticks * UWB_APP_DW_TIME_UNIT * UWB_APP_SPEED_OF_LIGHT -
+    double distance  = tof_ticks * UWB_APP_DW_TIME_UNIT * UWB_APP_SPEED_OF_LIGHT -
                       UWB_APP_ANT_DELAY_COMP_M;
 
     memset(out, 0, sizeof(*out));
-    out->anchor_id       = cur->anchor_id;
-    out->tag_id          = g_app_cfg.short_addr;
-    out->exchange_seq    = cur->exchange_seq;
+    out->anchor_id        = cur->anchor_id;
+    out->tag_id           = g_app_cfg.short_addr;
+    out->exchange_seq     = cur->exchange_seq;
     out->response_slot_id = cur->response_slot_id;
-    out->status_flags    = cur->status_flags;
-    out->distance_m      = distance;
-    out->quality         = cur->quality;
-    out->retry_count     = cur->retry_count;
-    out->tag_tx_ts       = cur->tag_tx_ts;
-    out->anchor_rx_ts    = cur->anchor_rx_ts;
-    out->anchor_tx_ts    = cur->anchor_tx_ts;
-    out->tag_rx_ts       = cur->tag_rx_ts;
-    out->frame_local_tick_20k =
-        (prev->tag_rx_local_tick_20k / 2ULL) + (cur->tag_rx_local_tick_20k / 2ULL) +
-        ((prev->tag_rx_local_tick_20k & 1ULL) &&
-         (cur->tag_rx_local_tick_20k & 1ULL) ? 1ULL : 0ULL);
+    out->status_flags     = cur->status_flags;
+    out->distance_m       = distance;
+    out->quality          = cur->quality;
+    out->retry_count      = cur->retry_count;
+    out->tag_tx_ts        = cur->tag_tx_ts;
+    out->anchor_rx_ts     = cur->anchor_rx_ts;
+    out->anchor_tx_ts     = cur->anchor_tx_ts;
+    out->tag_rx_ts        = cur->tag_rx_ts;
+    out->frame_local_tick_20k = cur->tag_rx_local_tick_20k;
     return true;
 }
 
@@ -389,25 +363,25 @@ static void publish_range_result(const UwbRangeResult *result)
     memset(&node, 0, sizeof(node));
     node.source = APP_DATA_SRC_UWB;
     (void)TimeService_CaptureNow(&node.time_capture);
-    node.time_capture.local_tick_20k = result->frame_local_tick_20k;
-    node.payload.uwb.anchor_id       = result->anchor_id;
-    node.payload.uwb.tag_id          = result->tag_id;
-    node.payload.uwb.exchange_seq    = result->exchange_seq;
-    node.payload.uwb.response_slot_id= result->response_slot_id;
-    node.payload.uwb.status_flags    = result->status_flags;
-    node.payload.uwb.distance_m      = result->distance_m;
-    node.payload.uwb.retry_count     = result->retry_count;
-    node.payload.uwb.rx_pacc         = result->quality.rx_pacc;
-    node.payload.uwb.fp_index        = result->quality.fp_index;
-    node.payload.uwb.fp_ampl1        = result->quality.fp_ampl1;
-    node.payload.uwb.fp_ampl2        = result->quality.fp_ampl2;
-    node.payload.uwb.fp_ampl3        = result->quality.fp_ampl3;
-    node.payload.uwb.std_noise       = result->quality.std_noise;
-    node.payload.uwb.max_noise       = result->quality.max_noise;
-    node.payload.uwb.tag_tx_ts       = result->tag_tx_ts;
-    node.payload.uwb.anchor_rx_ts    = result->anchor_rx_ts;
-    node.payload.uwb.anchor_tx_ts    = result->anchor_tx_ts;
-    node.payload.uwb.tag_rx_ts       = result->tag_rx_ts;
+    node.time_capture.local_tick_20k  = result->frame_local_tick_20k;
+    node.payload.uwb.anchor_id        = result->anchor_id;
+    node.payload.uwb.tag_id           = result->tag_id;
+    node.payload.uwb.exchange_seq     = result->exchange_seq;
+    node.payload.uwb.response_slot_id = result->response_slot_id;
+    node.payload.uwb.status_flags     = result->status_flags;
+    node.payload.uwb.distance_m       = result->distance_m;
+    node.payload.uwb.retry_count      = result->retry_count;
+    node.payload.uwb.rx_pacc          = result->quality.rx_pacc;
+    node.payload.uwb.fp_index         = result->quality.fp_index;
+    node.payload.uwb.fp_ampl1         = result->quality.fp_ampl1;
+    node.payload.uwb.fp_ampl2         = result->quality.fp_ampl2;
+    node.payload.uwb.fp_ampl3         = result->quality.fp_ampl3;
+    node.payload.uwb.std_noise        = result->quality.std_noise;
+    node.payload.uwb.max_noise        = result->quality.max_noise;
+    node.payload.uwb.tag_tx_ts        = result->tag_tx_ts;
+    node.payload.uwb.anchor_rx_ts     = result->anchor_rx_ts;
+    node.payload.uwb.anchor_tx_ts     = result->anchor_tx_ts;
+    node.payload.uwb.tag_rx_ts        = result->tag_rx_ts;
 
     if (!DataService_Send(&node, 0)) {
         app_log_warn("UWB data queue full");
@@ -443,7 +417,7 @@ static prox_peer_accum_t *prox_find_or_alloc_peer(uint16_t peer_anchor)
     for (uint32_t i = 0; i < PROX_TABLE_MAX_ENTRIES; ++i) {
         if (!g_prox_peers[i].valid) {
             memset(&g_prox_peers[i], 0, sizeof(g_prox_peers[i]));
-            g_prox_peers[i].valid = true;
+            g_prox_peers[i].valid       = true;
             g_prox_peers[i].peer_anchor = peer_anchor;
             return &g_prox_peers[i];
         }
@@ -472,8 +446,8 @@ static uint8_t prox_compact_and_sort_peers(void)
         for (uint8_t j = (uint8_t)(i + 1U); j < count; ++j) {
             if (g_prox_peers[j].peer_anchor < g_prox_peers[i].peer_anchor) {
                 prox_peer_accum_t tmp = g_prox_peers[i];
-                g_prox_peers[i] = g_prox_peers[j];
-                g_prox_peers[j] = tmp;
+                g_prox_peers[i]       = g_prox_peers[j];
+                g_prox_peers[j]       = tmp;
             }
         }
     }
@@ -540,7 +514,7 @@ static int16_t prox_avg_i32(int32_t sum, uint16_t count)
 static uint32_t prox_isqrt_u32(uint32_t value)
 {
     uint32_t root = 0U;
-    uint32_t bit = 1UL << 30;
+    uint32_t bit  = 1UL << 30;
 
     while (bit > value) {
         bit >>= 2;
@@ -565,9 +539,9 @@ static uint16_t prox_distance_std_cm(const prox_peer_accum_t *peer)
         return 0U;
     }
 
-    double count = (double)peer->valid_count;
-    double avg_m = peer->distance_sum_m / count;
-    double avg_sq_m = peer->distance_sq_sum_m / count;
+    double count       = (double)peer->valid_count;
+    double avg_m       = peer->distance_sum_m / count;
+    double avg_sq_m    = peer->distance_sq_sum_m / count;
     double variance_m2 = avg_sq_m - avg_m * avg_m;
     if (variance_m2 <= 0.0) {
         return 0U;
@@ -588,9 +562,9 @@ static uint16_t prox_fp_index_std(const prox_peer_accum_t *peer)
         return 0U;
     }
 
-    double count = (double)peer->valid_count;
-    double avg = (double)peer->fp_index_sum / count;
-    double avg_sq = (double)peer->fp_index_sq_sum / count;
+    double count    = (double)peer->valid_count;
+    double avg      = (double)peer->fp_index_sum / count;
+    double avg_sq   = (double)peer->fp_index_sq_sum / count;
     double variance = avg_sq - avg * avg;
     if (variance <= 0.0) {
         return 0U;
@@ -644,18 +618,19 @@ static uint8_t prox_quality(const prox_peer_accum_t *peer)
         return 0U;
     }
 
-    uint32_t valid_count = peer->valid_count;
-    uint32_t sample_score = (valid_count > 64U ? 64U : valid_count) * 100U / 64U;
+    uint32_t valid_count    = peer->valid_count;
+    uint32_t sample_score   = (valid_count > 64U ? 64U : valid_count) * 100U / 64U;
     uint32_t dist_std_score = prox_score_low_u16(prox_distance_std_cm(peer),
                                                  20U,
                                                  100U);
-    uint32_t avg_pacc = prox_avg_pacc(peer);
-    uint32_t pacc_score = prox_score_high_u16((uint16_t)avg_pacc,
-                                              PROX_SCORE_PACC_REF);
+    uint32_t avg_pacc       = prox_avg_pacc(peer);
+    uint32_t pacc_score     = prox_score_high_u16((uint16_t)avg_pacc,
+                                                  PROX_SCORE_PACC_REF);
     uint32_t avg_fp_ampl =
         ((uint32_t)prox_avg_u32(peer->fp_ampl1_sum, peer->valid_count) +
          (uint32_t)prox_avg_u32(peer->fp_ampl2_sum, peer->valid_count) +
-         (uint32_t)prox_avg_u32(peer->fp_ampl3_sum, peer->valid_count)) / 3U;
+         (uint32_t)prox_avg_u32(peer->fp_ampl3_sum, peer->valid_count)) /
+        3U;
     uint32_t fp_ampl_score = prox_score_high_u16(
         avg_fp_ampl > UINT16_MAX ? UINT16_MAX : (uint16_t)avg_fp_ampl,
         PROX_SCORE_FP_AMPL_REF);
@@ -665,7 +640,8 @@ static uint8_t prox_quality(const prox_peer_accum_t *peer)
                             PROX_SCORE_STD_NOISE_BAD) +
          prox_score_low_u16(prox_avg_u32(peer->max_noise_sum, peer->valid_count),
                             PROX_SCORE_MAX_NOISE_GOOD,
-                            PROX_SCORE_MAX_NOISE_BAD)) / 2U;
+                            PROX_SCORE_MAX_NOISE_BAD)) /
+        2U;
     uint32_t power_score =
         (prox_score_power_x100(prox_avg_i32(peer->rx_power_dbm_x100_sum,
                                             peer->valid_count),
@@ -674,17 +650,19 @@ static uint8_t prox_quality(const prox_peer_accum_t *peer)
          prox_score_power_x100(prox_avg_i32(peer->fp_power_dbm_x100_sum,
                                             peer->valid_count),
                                PROX_SCORE_FP_POWER_GOOD,
-                               PROX_SCORE_FP_POWER_BAD)) / 2U;
+                               PROX_SCORE_FP_POWER_BAD)) /
+        2U;
     uint32_t fp_index_score = prox_score_low_u16(prox_fp_index_std(peer),
                                                  PROX_SCORE_FP_INDEX_STD_GOOD,
                                                  PROX_SCORE_FP_INDEX_STD_BAD);
-    uint32_t quality = (sample_score * 10U +
+    uint32_t quality        = (sample_score * 10U +
                         dist_std_score * 20U +
                         pacc_score * 15U +
                         fp_ampl_score * 15U +
                         noise_score * 15U +
                         power_score * 15U +
-                        fp_index_score * 10U) / 100U;
+                        fp_index_score * 10U) /
+                       100U;
 
     if (valid_count < PROX_MIN_VALID_SAMPLES && quality > 60U) {
         quality = 60U;
@@ -708,7 +686,7 @@ static void prox_log_hex(const uint8_t *buf, uint16_t len)
 
     for (uint16_t off = 0U; off < len; off = (uint16_t)(off + 16U)) {
         char line[80];
-        uint16_t pos = 0U;
+        uint16_t pos   = 0U;
         uint16_t chunk = (uint16_t)(len - off);
         if (chunk > 16U) {
             chunk = 16U;
@@ -740,8 +718,8 @@ static void prox_log_peer_summary(uint8_t entry_count)
 {
     char line[192];
     uint16_t pos = 0U;
-    int wrote = snprintf(line, sizeof(line), "[PROX] peers count=%u ids=",
-                         (unsigned)entry_count);
+    int wrote    = snprintf(line, sizeof(line), "[PROX] peers count=%u ids=",
+                            (unsigned)entry_count);
 
     if (wrote < 0) {
         return;
@@ -753,14 +731,14 @@ static void prox_log_peer_summary(uint8_t entry_count)
     } else {
         for (uint8_t i = 0U; i < entry_count && pos < sizeof(line); ++i) {
             const prox_peer_accum_t *peer = &g_prox_peers[i];
-            uint8_t quality = prox_quality(peer);
-            wrote = snprintf(&line[pos],
-                             sizeof(line) - pos,
-                             "%s0x%04X:s%u/q%u",
+            uint8_t quality               = prox_quality(peer);
+            wrote                         = snprintf(&line[pos],
+                                                     sizeof(line) - pos,
+                                                     "%s0x%04X:s%u/q%u",
                              i == 0U ? "" : ",",
-                             peer->peer_anchor,
-                             (unsigned)peer->valid_count,
-                             (unsigned)quality);
+                                                     peer->peer_anchor,
+                                                     (unsigned)peer->valid_count,
+                                                     (unsigned)quality);
             if (wrote < 0) {
                 return;
             }
@@ -774,8 +752,8 @@ static void prox_log_peer_summary(uint8_t entry_count)
 static uint16_t prox_select_ring_next(uint8_t entry_count)
 {
     uint16_t best_after_self = 0U;
-    uint16_t best_wrap = 0U;
-    uint16_t self = g_app_cfg.short_addr;
+    uint16_t best_wrap       = 0U;
+    uint16_t self            = g_app_cfg.short_addr;
 
     for (uint8_t i = 0U; i < entry_count; ++i) {
         uint16_t peer_anchor = g_prox_peers[i].peer_anchor;
@@ -841,7 +819,7 @@ static void prox_queue_ring_notify(uint16_t target_anchor)
     }
 
     g_prox_ring_notify_pending = true;
-    g_prox_ring_notify_target = target_anchor;
+    g_prox_ring_notify_target  = target_anchor;
     g_prox_ring_notify_next_ms = HAL_GetTick();
 
     AppTasks_SetAnchorNotifyInitLed(true);
@@ -866,10 +844,10 @@ static void prox_ring_notify_poll(void)
 
     UwbLinkCmd cmd;
     memset(&cmd, 0, sizeof(cmd));
-    cmd.type = LINK_CMD_RING_INIT_NOTIFY;
+    cmd.type       = LINK_CMD_RING_INIT_NOTIFY;
     cmd.slot_index = -1;
-    cmd.target_id = g_prox_ring_notify_target;
-    cmd.origin_id = g_prox_ring_origin_anchor;
+    cmd.target_id  = g_prox_ring_notify_target;
+    cmd.origin_id  = g_prox_ring_origin_anchor;
     cmd.session_id = g_prox_ring_token_seq;
 
     if (UwbLink_SendCmd(&cmd)) {
@@ -890,9 +868,9 @@ static void prox_ring_notify_poll(void)
 static void prox_finalize_table(void)
 {
     uint8_t entry_count = prox_compact_and_sort_peers();
-    uint16_t len = (uint16_t)(PROX_TABLE_HEADER_LEN +
+    uint16_t len        = (uint16_t)(PROX_TABLE_HEADER_LEN +
                               entry_count * PROX_TABLE_ENTRY_LEN);
-    uint16_t offset = PROX_TABLE_HEADER_LEN;
+    uint16_t offset     = PROX_TABLE_HEADER_LEN;
 
     memset(g_tx_buf, 0, sizeof(g_tx_buf));
     g_tx_buf[0] = PROX_TABLE_VERSION;
@@ -907,29 +885,28 @@ static void prox_finalize_table(void)
 
     for (uint32_t i = 0U; i < entry_count; ++i) {
         const prox_peer_accum_t *peer = &g_prox_peers[i];
-        uint16_t dist_cm = prox_avg_distance_cm(peer);
-        uint16_t dist_std_cm = prox_distance_std_cm(peer);
-        uint16_t avg_pacc = prox_avg_pacc(peer);
-        uint16_t avg_fp_index = prox_avg_u32(peer->fp_index_sum,
-                                             peer->valid_count);
-        uint16_t avg_fp_ampl1 = prox_avg_u32(peer->fp_ampl1_sum,
-                                             peer->valid_count);
-        uint16_t avg_fp_ampl2 = prox_avg_u32(peer->fp_ampl2_sum,
-                                             peer->valid_count);
-        uint16_t avg_fp_ampl3 = prox_avg_u32(peer->fp_ampl3_sum,
-                                             peer->valid_count);
-        uint16_t avg_std_noise = prox_avg_u32(peer->std_noise_sum,
-                                              peer->valid_count);
-        uint16_t avg_max_noise = prox_avg_u32(peer->max_noise_sum,
-                                              peer->valid_count);
-        int16_t avg_rx_power = prox_avg_i32(peer->rx_power_dbm_x100_sum,
-                                            peer->valid_count);
-        int16_t avg_fp_power = prox_avg_i32(peer->fp_power_dbm_x100_sum,
-                                            peer->valid_count);
-        uint8_t samples = peer->valid_count > UINT8_MAX ?
-                          UINT8_MAX : (uint8_t)peer->valid_count;
-        uint8_t quality = prox_quality(peer);
-        uint8_t flags = PROX_ENTRY_FLAG_VALID;
+        uint16_t dist_cm              = prox_avg_distance_cm(peer);
+        uint16_t dist_std_cm          = prox_distance_std_cm(peer);
+        uint16_t avg_pacc             = prox_avg_pacc(peer);
+        uint16_t avg_fp_index         = prox_avg_u32(peer->fp_index_sum,
+                                                     peer->valid_count);
+        uint16_t avg_fp_ampl1         = prox_avg_u32(peer->fp_ampl1_sum,
+                                                     peer->valid_count);
+        uint16_t avg_fp_ampl2         = prox_avg_u32(peer->fp_ampl2_sum,
+                                                     peer->valid_count);
+        uint16_t avg_fp_ampl3         = prox_avg_u32(peer->fp_ampl3_sum,
+                                                     peer->valid_count);
+        uint16_t avg_std_noise        = prox_avg_u32(peer->std_noise_sum,
+                                                     peer->valid_count);
+        uint16_t avg_max_noise        = prox_avg_u32(peer->max_noise_sum,
+                                                     peer->valid_count);
+        int16_t avg_rx_power          = prox_avg_i32(peer->rx_power_dbm_x100_sum,
+                                                     peer->valid_count);
+        int16_t avg_fp_power          = prox_avg_i32(peer->fp_power_dbm_x100_sum,
+                                                     peer->valid_count);
+        uint8_t samples               = peer->valid_count > UINT8_MAX ? UINT8_MAX : (uint8_t)peer->valid_count;
+        uint8_t quality               = prox_quality(peer);
+        uint8_t flags                 = PROX_ENTRY_FLAG_VALID;
 
         if (peer->valid_count < PROX_MIN_VALID_SAMPLES) {
             flags |= PROX_ENTRY_FLAG_LOW_SAMPLE;
@@ -982,7 +959,7 @@ static void prox_finalize_table(void)
 
     uint16_t crc = crc16_ccitt(g_tx_buf, len);
     UwbProtocol_WriteLe16(&g_tx_buf[6], crc);
-    g_tx_len = len;
+    g_tx_len                  = len;
     g_anchor_data.total_frags = calc_total_frags(g_tx_len);
 
     app_log_info("[PROX] table ready self=0x%04X seq=%u entries=%u max=%u len=%u frags=%u crc=0x%04X disc_req=%lu queued=%lu",
@@ -1008,13 +985,13 @@ static void prox_finalize_table(void)
 static void prox_start_build(uint32_t now)
 {
     prox_reset_peers();
-    g_prox_state = PROX_BUILD_RUNNING;
-    g_prox_request_pending = false;
-    g_prox_started_ms = now;
-    g_prox_next_disc_ms = now;
+    g_prox_state              = PROX_BUILD_RUNNING;
+    g_prox_request_pending    = false;
+    g_prox_started_ms         = now;
+    g_prox_next_disc_ms       = now;
     g_prox_disc_request_count = 0U;
-    g_prox_disc_queued_count = 0U;
-    g_prox_ring_next_anchor = 0U;
+    g_prox_disc_queued_count  = 0U;
+    g_prox_ring_next_anchor   = 0U;
     g_prox_ring_start_pending = false;
     if (g_prox_ring_origin_anchor == 0U) {
         g_prox_ring_origin_anchor = g_app_cfg.short_addr;
@@ -1036,7 +1013,7 @@ static void prox_request_discovery(void)
 {
     UwbLinkCmd cmd;
     memset(&cmd, 0, sizeof(cmd));
-    cmd.type = LINK_CMD_PROX_DISCOVERY;
+    cmd.type       = LINK_CMD_PROX_DISCOVERY;
     cmd.slot_index = -1;
 
     g_prox_disc_request_count++;
@@ -1063,7 +1040,7 @@ static void prox_build_poll(void)
         (int32_t)(now - g_prox_ring_start_ms) >= 0 &&
         g_prox_state == PROX_BUILD_IDLE) {
         g_prox_ring_start_pending = false;
-        g_prox_request_pending = true;
+        g_prox_request_pending    = true;
         app_log_info("[PROX] ring delayed start self=0x%04X prev=0x%04X origin=0x%04X seq=%u",
                      g_app_cfg.short_addr,
                      g_prox_ring_prev_anchor,
@@ -1149,7 +1126,7 @@ static tag_pull_record_t *tag_alloc_pull_record(uint16_t anchor_id)
     for (uint32_t i = 0U; i < TAG_PULL_MAX_ANCHORS; ++i) {
         if (!g_tag_pull_records[i].valid) {
             memset(&g_tag_pull_records[i], 0, sizeof(g_tag_pull_records[i]));
-            g_tag_pull_records[i].valid = true;
+            g_tag_pull_records[i].valid     = true;
             g_tag_pull_records[i].anchor_id = anchor_id;
             return &g_tag_pull_records[i];
         }
@@ -1184,8 +1161,7 @@ static void tag_maybe_queue_data_pull(const UwbRangeResult *result)
     if (result == NULL ||
         g_app_cfg.role != APP_ROLE_TAG ||
         result->anchor_id == 0U ||
-        result->distance_m <= 0.0 ||
-        result->distance_m > TAG_PULL_TRIGGER_DIST_M) {
+        result->distance_m <= 0.0) {
         return;
     }
 
@@ -1201,13 +1177,12 @@ static void tag_maybe_queue_data_pull(const UwbRangeResult *result)
     }
 
     rec->trigger_distance_m = result->distance_m;
-    rec->trigger_ms = HAL_GetTick();
-    rec->started = false;
+    rec->trigger_ms         = HAL_GetTick();
+    rec->started            = false;
 
-    app_log_info("[APP] TAG_PULL_TRIGGER anchor=0x%04X dist=%.2fm threshold=%.2fm action=%s",
+    app_log_info("[APP] TAG_PULL_TRIGGER anchor=0x%04X dist=%.2fm action=%s",
                  rec->anchor_id,
                  rec->trigger_distance_m,
-                 TAG_PULL_TRIGGER_DIST_M,
                  g_tag_data.state == TAG_DATA_IDLE ? "start" : "queue");
 }
 
@@ -1220,12 +1195,12 @@ static twr_anchor_record_t *find_anchor_record(uint16_t anchor_id)
     }
     for (int i = 0; i < TWR_MAX_ANCHORS; i++) {
         if (!g_anchor_records[i].valid) {
-            g_anchor_records[i].valid = true;
-            g_anchor_records[i].anchor_id = anchor_id;
-            g_anchor_records[i].have_prev_exchange = false;
-            g_anchor_records[i].anchor_tx_ts = 0;
-            g_anchor_records[i].tag_rx_ts = 0;
-            g_anchor_records[i].tag_rx_local_tick_20k = 0;
+            g_anchor_records[i].valid                               = true;
+            g_anchor_records[i].anchor_id                           = anchor_id;
+            g_anchor_records[i].have_prev_exchange                  = false;
+            g_anchor_records[i].anchor_tx_ts                        = 0;
+            g_anchor_records[i].tag_rx_ts                           = 0;
+            g_anchor_records[i].tag_rx_local_tick_20k               = 0;
             g_anchor_records[i].last_published_frame_local_tick_20k = 0;
             return &g_anchor_records[i];
         }
@@ -1238,9 +1213,9 @@ static void twr_record_exchange(twr_anchor_record_t *rec,
 {
     if (rec == NULL || exchange == NULL) return;
 
-    rec->have_prev_exchange = true;
-    rec->anchor_tx_ts = exchange->anchor_tx_ts;
-    rec->tag_rx_ts = exchange->tag_rx_ts;
+    rec->have_prev_exchange    = true;
+    rec->anchor_tx_ts          = exchange->anchor_tx_ts;
+    rec->tag_rx_ts             = exchange->tag_rx_ts;
     rec->tag_rx_local_tick_20k = exchange->tag_rx_local_tick_20k;
 }
 
@@ -1265,58 +1240,36 @@ static void handle_twr_exchange(const UwbTwrExchange *exchange)
     if (!rec->have_prev_exchange) {
         rec->last_published_frame_local_tick_20k = 0U;
         twr_record_exchange(rec, exchange);
-        app_log_info("[APP] TWR_DBG_WAIT_PAIR anchor=0x%04X seq=%u",
-                     exchange->anchor_id,
-                     (unsigned)exchange->exchange_seq);
         return;
     }
 
     UwbRangeResult result;
     UwbTwrExchange prev;
     memset(&prev, 0, sizeof(prev));
-    prev.anchor_id    = rec->anchor_id;
-    prev.anchor_tx_ts = rec->anchor_tx_ts;
-    prev.tag_rx_ts    = rec->tag_rx_ts;
+    prev.anchor_id             = rec->anchor_id;
+    prev.anchor_tx_ts          = rec->anchor_tx_ts;
+    prev.tag_rx_ts             = rec->tag_rx_ts;
     prev.tag_rx_local_tick_20k = rec->tag_rx_local_tick_20k;
 
     if (!compute_range(&prev, exchange, &result)) {
-        app_log_warn("[APP] TWR_DBG_DS_DROP anchor=0x%04X seq=%u action=rebuild_window reason=compute",
-                     exchange->anchor_id,
-                     (unsigned)exchange->exchange_seq);
         rec->last_published_frame_local_tick_20k = 0U;
         twr_record_exchange(rec, exchange);
         return;
     }
 
     {
-        uint64_t gap_ticks = 0U;
+        uint64_t gap_ticks        = 0U;
         twr_gap_class_t gap_class = TWR_GAP_SHORT;
         if (!twr_get_published_gap_info(rec->last_published_frame_local_tick_20k,
                                         result.frame_local_tick_20k,
                                         &gap_ticks,
                                         &gap_class)) {
-            app_log_warn("[APP] TWR_DBG_DS_DROP anchor=0x%04X seq=%u action=rebuild_window reason=frame_time",
-                         exchange->anchor_id,
-                         (unsigned)exchange->exchange_seq);
             rec->last_published_frame_local_tick_20k = 0U;
             twr_record_exchange(rec, exchange);
             return;
         }
 
-        app_log_info("[APP] TWR_DBG_GAP anchor=0x%04X seq=%u last_ms=%.3f cand_ms=%.3f gap_ms=%.3f gap_class=%s",
-                     exchange->anchor_id,
-                     (unsigned)exchange->exchange_seq,
-                     local_tick_to_ms(rec->last_published_frame_local_tick_20k),
-                     local_tick_to_ms(result.frame_local_tick_20k),
-                     local_tick_to_ms(gap_ticks),
-                     gap_class == TWR_GAP_SHORT ? "SHORT" :
-                     (gap_class == TWR_GAP_LONG ? "LONG" : "DROP"));
-
         if (gap_class == TWR_GAP_DROP) {
-            app_log_warn("[APP] TWR_DBG_DS_DROP anchor=0x%04X seq=%u action=rebuild_window reason=gap_timeout gap_ms=%.3f",
-                         exchange->anchor_id,
-                         (unsigned)exchange->exchange_seq,
-                         local_tick_to_ms(gap_ticks));
             rec->last_published_frame_local_tick_20k = 0U;
             twr_record_exchange(rec, exchange);
             return;
@@ -1326,9 +1279,7 @@ static void handle_twr_exchange(const UwbTwrExchange *exchange)
                                            APP_UWB_STATUS_FLAG_TWR_DS_SHORT |
                                            APP_UWB_STATUS_FLAG_TWR_DS_LONG);
         result.status_flags |= APP_UWB_STATUS_FLAG_TWR_DS;
-        result.status_flags |= gap_class == TWR_GAP_SHORT ?
-            APP_UWB_STATUS_FLAG_TWR_DS_SHORT :
-            APP_UWB_STATUS_FLAG_TWR_DS_LONG;
+        result.status_flags |= gap_class == TWR_GAP_SHORT ? APP_UWB_STATUS_FLAG_TWR_DS_SHORT : APP_UWB_STATUS_FLAG_TWR_DS_LONG;
 
         prox_accumulate_result(&result);
         tag_maybe_queue_data_pull(&result);
@@ -1347,23 +1298,23 @@ static void handle_twr_exchange(const UwbTwrExchange *exchange)
 static void tag_reset_session(void)
 {
     memset(&g_tag_data.current_cmd, 0, sizeof(g_tag_data.current_cmd));
-    g_tag_data.state = TAG_DATA_IDLE;
-    g_tag_data.target_id = 0;
-    g_tag_data.session_id = 0;
-    g_tag_data.total_len = 0;
-    g_tag_data.total_crc = 0;
-    g_tag_data.total_frags = 0;
-    g_tag_data.next_frag = 0;
+    g_tag_data.state              = TAG_DATA_IDLE;
+    g_tag_data.target_id          = 0;
+    g_tag_data.session_id         = 0;
+    g_tag_data.total_len          = 0;
+    g_tag_data.total_crc          = 0;
+    g_tag_data.total_frags        = 0;
+    g_tag_data.next_frag          = 0;
     g_tag_data.session_started_ms = 0;
-    g_tag_data.retry_at_ms = 0;
-    g_tag_data.cmd_count = 0;
-    g_tag_data.ack_count = 0;
-    g_tag_data.wait_count = 0;
-    g_tag_data.frag_count = 0;
-    g_tag_data.drop_count = 0;
-    g_tag_data.cmd_pending = false;
-    g_tag_data.completion_logged = false;
-    g_rx_len = 0;
+    g_tag_data.retry_at_ms        = 0;
+    g_tag_data.cmd_count          = 0;
+    g_tag_data.ack_count          = 0;
+    g_tag_data.wait_count         = 0;
+    g_tag_data.frag_count         = 0;
+    g_tag_data.drop_count         = 0;
+    g_tag_data.cmd_pending        = false;
+    g_tag_data.completion_logged  = false;
+    g_rx_len                      = 0;
 }
 
 static void tag_submit_cmd(const UwbLinkCmd *cmd)
@@ -1378,7 +1329,7 @@ static void tag_send_reset_cmd(uint16_t session_id)
 {
     UwbLinkCmd cmd;
     memset(&cmd, 0, sizeof(cmd));
-    cmd.type = LINK_CMD_SESSION_RESET;
+    cmd.type       = LINK_CMD_SESSION_RESET;
     cmd.session_id = session_id;
     (void)UwbLink_SendCmd(&cmd);
 }
@@ -1404,9 +1355,9 @@ static void tag_request_cfg(uint16_t target_id, uint16_t session_id)
 {
     UwbLinkCmd cmd;
     memset(&cmd, 0, sizeof(cmd));
-    cmd.type = LINK_CMD_SEND_CFG_REQ;
+    cmd.type       = LINK_CMD_SEND_CFG_REQ;
     cmd.slot_index = -1;
-    cmd.target_id = target_id;
+    cmd.target_id  = target_id;
     cmd.session_id = session_id;
     tag_submit_cmd(&cmd);
 }
@@ -1415,12 +1366,12 @@ static void tag_request_ctrl(uint8_t ctrl_type, uint8_t frag_id)
 {
     UwbLinkCmd cmd;
     memset(&cmd, 0, sizeof(cmd));
-    cmd.type = LINK_CMD_SEND_CTRL;
+    cmd.type       = LINK_CMD_SEND_CTRL;
     cmd.slot_index = -1;
-    cmd.target_id = g_tag_data.target_id;
+    cmd.target_id  = g_tag_data.target_id;
     cmd.session_id = g_tag_data.session_id;
-    cmd.ctrl_type = ctrl_type;
-    cmd.frag_id = frag_id;
+    cmd.ctrl_type  = ctrl_type;
+    cmd.frag_id    = frag_id;
     tag_submit_cmd(&cmd);
 }
 
@@ -1447,9 +1398,9 @@ static void tag_start_session(uint16_t target_id)
     if (g_next_session_id == 0U) g_next_session_id = 1U;
     if (session_id == 0U) session_id = g_next_session_id++;
 
-    g_tag_data.state = TAG_DATA_WAIT_CFG_ACK;
-    g_tag_data.target_id = target_id;
-    g_tag_data.session_id = session_id;
+    g_tag_data.state              = TAG_DATA_WAIT_CFG_ACK;
+    g_tag_data.target_id          = target_id;
+    g_tag_data.session_id         = session_id;
     g_tag_data.session_started_ms = HAL_GetTick();
     memset(g_rx_buf, 0, sizeof(g_rx_buf));
     g_rx_len = 0;
@@ -1474,7 +1425,7 @@ static void tag_log_session_complete(void)
 {
     if (g_tag_data.completion_logged) return;
 
-    uint32_t now = HAL_GetTick();
+    uint32_t now         = HAL_GetTick();
     uint32_t duration_ms = 0;
     if (g_tag_data.session_started_ms > 0U) {
         duration_ms = now - g_tag_data.session_started_ms;
@@ -1524,7 +1475,7 @@ static bool tag_verify_prox_table(void)
     }
 
     entry_count = g_rx_buf[1];
-    table_len = (uint16_t)(PROX_TABLE_HEADER_LEN +
+    table_len   = (uint16_t)(PROX_TABLE_HEADER_LEN +
                            entry_count * PROX_TABLE_ENTRY_LEN);
     if (table_len != g_rx_len) {
         app_log_warn("[APP] PROX_TABLE_INVALID anchor=0x%04X entries=%u len=%u expect=%u",
@@ -1535,12 +1486,12 @@ static bool tag_verify_prox_table(void)
         return false;
     }
 
-    table_crc = UwbProtocol_ReadLe16(&g_rx_buf[6]);
-    crc_lo = g_rx_buf[6];
-    crc_hi = g_rx_buf[7];
+    table_crc   = UwbProtocol_ReadLe16(&g_rx_buf[6]);
+    crc_lo      = g_rx_buf[6];
+    crc_hi      = g_rx_buf[7];
     g_rx_buf[6] = 0U;
     g_rx_buf[7] = 0U;
-    got_crc = crc16_ccitt(g_rx_buf, g_rx_len);
+    got_crc     = crc16_ccitt(g_rx_buf, g_rx_len);
     g_rx_buf[6] = crc_lo;
     g_rx_buf[7] = crc_hi;
 
@@ -1553,7 +1504,7 @@ static bool tag_verify_prox_table(void)
     }
 
     table_self = UwbProtocol_ReadLe16(&g_rx_buf[2]);
-    table_seq = UwbProtocol_ReadLe16(&g_rx_buf[4]);
+    table_seq  = UwbProtocol_ReadLe16(&g_rx_buf[4]);
     app_log_info("[APP] DATA_VERIFY_OK anchor=0x%04X len=%u frags=%u crc=0x%04X",
                  g_tag_data.target_id,
                  g_rx_len,
@@ -1568,15 +1519,15 @@ static bool tag_verify_prox_table(void)
 
     log_count = entry_count > 4U ? 4U : entry_count;
     for (uint8_t i = 0U; i < log_count; ++i) {
-        uint16_t off = (uint16_t)(PROX_TABLE_HEADER_LEN +
+        uint16_t off     = (uint16_t)(PROX_TABLE_HEADER_LEN +
                                   i * PROX_TABLE_ENTRY_LEN);
-        uint16_t self = UwbProtocol_ReadLe16(&g_rx_buf[off + 0U]);
-        uint16_t peer = UwbProtocol_ReadLe16(&g_rx_buf[off + 2U]);
+        uint16_t self    = UwbProtocol_ReadLe16(&g_rx_buf[off + 0U]);
+        uint16_t peer    = UwbProtocol_ReadLe16(&g_rx_buf[off + 2U]);
         uint16_t dist_cm = UwbProtocol_ReadLe16(&g_rx_buf[off + 4U]);
-        uint16_t std_cm = UwbProtocol_ReadLe16(&g_rx_buf[off + 6U]);
-        uint8_t samples = g_rx_buf[off + 26U];
-        uint8_t quality = g_rx_buf[off + 27U];
-        uint8_t flags = g_rx_buf[off + 28U];
+        uint16_t std_cm  = UwbProtocol_ReadLe16(&g_rx_buf[off + 6U]);
+        uint8_t samples  = g_rx_buf[off + 26U];
+        uint8_t quality  = g_rx_buf[off + 27U];
+        uint8_t flags    = g_rx_buf[off + 28U];
 
         app_log_info("[APP] PROX_ENTRY_RX anchor=0x%04X self=0x%04X peer=0x%04X dist=%ucm std=%ucm samples=%u quality=%u flags=0x%02X",
                      g_tag_data.target_id,
@@ -1663,11 +1614,11 @@ static void handle_tag_frag(const UwbDataFragEvent *evt)
     if ((evt->flags & UWB_DATA_FRAG_FLAG_META) != 0U) {
         if (g_tag_data.state == TAG_DATA_WAIT_META &&
             frame.common.payload_len >= DATA_META_PAYLOAD_LEN) {
-            g_tag_data.total_len = UwbProtocol_ReadLe16(&frame.payload[0]);
+            g_tag_data.total_len   = UwbProtocol_ReadLe16(&frame.payload[0]);
             g_tag_data.total_frags = frame.payload[2];
-            g_tag_data.total_crc = UwbProtocol_ReadLe16(&frame.payload[4]);
-            g_tag_data.next_frag = 1U;
-            g_rx_len = 0;
+            g_tag_data.total_crc   = UwbProtocol_ReadLe16(&frame.payload[4]);
+            g_tag_data.next_frag   = 1U;
+            g_rx_len               = 0;
 
             app_log_info("[APP] DATA_META len=%u total_frags=%u crc=0x%04X",
                          g_tag_data.total_len,
@@ -1706,10 +1657,10 @@ static void handle_tag_frag(const UwbDataFragEvent *evt)
         return;
     }
 
-    uint16_t frag_crc = UwbProtocol_ReadLe16(&frame.payload[0]);
+    uint16_t frag_crc        = UwbProtocol_ReadLe16(&frame.payload[0]);
     const uint8_t *frag_data = &frame.payload[DATA_FRAG_CRC_LEN];
-    uint16_t frag_len = (uint16_t)(frame.common.payload_len - DATA_FRAG_CRC_LEN);
-    uint16_t calc_crc = crc16_ccitt(frag_data, frag_len);
+    uint16_t frag_len        = (uint16_t)(frame.common.payload_len - DATA_FRAG_CRC_LEN);
+    uint16_t calc_crc        = crc16_ccitt(frag_data, frag_len);
 
     if (calc_crc != frag_crc) {
         app_log_warn("[APP] DATA_FRAG_CRC_FAIL frag=%u got=0x%04X calc=0x%04X",
@@ -1841,19 +1792,19 @@ static bool anchor_send_payload_slot(uint16_t target_id, uint16_t session_id,
     }
 
     memcpy(s->data, payload, payload_len);
-    s->data_len = payload_len;
-    s->session_id = session_id;
-    s->frag_id = frag_id;
+    s->data_len    = payload_len;
+    s->session_id  = session_id;
+    s->frag_id     = frag_id;
     s->total_frags = g_anchor_data.total_frags;
-    s->data_flags = flags;
+    s->data_flags  = flags;
 
     UwbLinkCmd cmd;
     memset(&cmd, 0, sizeof(cmd));
-    cmd.type = LINK_CMD_SEND_FRAG;
+    cmd.type       = LINK_CMD_SEND_FRAG;
     cmd.slot_index = idx;
-    cmd.target_id = target_id;
+    cmd.target_id  = target_id;
     cmd.session_id = session_id;
-    cmd.frag_id = frag_id;
+    cmd.frag_id    = frag_id;
 
     if (!anchor_send_cmd(&cmd)) {
         app_log_warn("[APP] DATA_SEND_FRAG queue full frag=%u", (unsigned)frag_id);
@@ -1886,8 +1837,8 @@ static void anchor_prepare_data_frag(uint16_t target_id, uint16_t session_id,
         return;
     }
 
-    uint16_t offset = (uint16_t)((frag_id - 1U) * UWB_DATA_FRAG_PAYLOAD_SIZE);
-    uint16_t remain = (offset < g_tx_len) ? (uint16_t)(g_tx_len - offset) : 0U;
+    uint16_t offset   = (uint16_t)((frag_id - 1U) * UWB_DATA_FRAG_PAYLOAD_SIZE);
+    uint16_t remain   = (offset < g_tx_len) ? (uint16_t)(g_tx_len - offset) : 0U;
     uint16_t frag_len = min_u16(remain, UWB_DATA_FRAG_PAYLOAD_SIZE);
 
     uint8_t payload[UWB_PROTO_MAX_PAYLOAD_LEN];
@@ -1902,16 +1853,16 @@ static void handle_anchor_data_cfg(const UwbLinkAppEvent *evt)
 {
     if (evt == NULL || g_app_cfg.role != APP_ROLE_ANCHOR) return;
 
-    g_anchor_data.active = true;
-    g_anchor_data.tag_id = evt->data.data_cfg.src_id;
-    g_anchor_data.session_id = evt->data.data_cfg.session_id;
-    g_anchor_data.total_frags = calc_total_frags(g_tx_len);
-    g_anchor_data.last_ms = HAL_GetTick();
-    g_anchor_data.cfg_count = 1U;
-    g_anchor_data.ctrl_count = 0;
-    g_anchor_data.pull_count = 0;
+    g_anchor_data.active           = true;
+    g_anchor_data.tag_id           = evt->data.data_cfg.src_id;
+    g_anchor_data.session_id       = evt->data.data_cfg.session_id;
+    g_anchor_data.total_frags      = calc_total_frags(g_tx_len);
+    g_anchor_data.last_ms          = HAL_GetTick();
+    g_anchor_data.cfg_count        = 1U;
+    g_anchor_data.ctrl_count       = 0;
+    g_anchor_data.pull_count       = 0;
     g_anchor_data.frag_ready_count = 0;
-    g_anchor_data.drop_count = 0;
+    g_anchor_data.drop_count       = 0;
 
     app_log_info("[APP] DATA_CFG tag=0x%04X sess=0x%04X total_frags=%u",
                  g_anchor_data.tag_id, g_anchor_data.session_id,
@@ -1964,7 +1915,7 @@ static void handle_anchor_data_sent(const UwbLinkAppEvent *evt)
     if (evt == NULL || g_app_cfg.role != APP_ROLE_ANCHOR) return;
 
     uint16_t session_id = evt->data.data_sent.session_id;
-    uint8_t frag_id = evt->data.data_sent.frag_id;
+    uint8_t frag_id     = evt->data.data_sent.frag_id;
 
     if (!g_anchor_data.active ||
         session_id != g_anchor_data.session_id) {
@@ -2006,9 +1957,9 @@ static void handle_ring_init_notify(const UwbLinkAppEvent *evt)
         return;
     }
 
-    uint16_t src_id = evt->data.ring_init.src_id;
+    uint16_t src_id    = evt->data.ring_init.src_id;
     uint16_t origin_id = evt->data.ring_init.origin_id;
-    uint16_t ring_seq = evt->data.ring_init.seq;
+    uint16_t ring_seq  = evt->data.ring_init.seq;
 
     if (!prox_anchor_id_in_range(g_app_cfg.short_addr) ||
         !prox_anchor_id_in_range(origin_id)) {
@@ -2020,13 +1971,13 @@ static void handle_ring_init_notify(const UwbLinkAppEvent *evt)
         return;
     }
 
-    g_prox_ring_prev_anchor = src_id;
+    g_prox_ring_prev_anchor   = src_id;
     g_prox_ring_origin_anchor = origin_id;
-    g_prox_ring_token_seq = ring_seq == 0U ? 1U : ring_seq;
+    g_prox_ring_token_seq     = ring_seq == 0U ? 1U : ring_seq;
 
     if (origin_id == g_app_cfg.short_addr) {
         g_prox_ring_start_pending = false;
-        g_prox_request_pending = false;
+        g_prox_request_pending    = false;
         AppTasks_SetAnchorGlobalInitLed(false);
         AppTasks_SetAnchorLocalInitLed(false);
         AppTasks_SetAnchorNotifyInitLed(false);
@@ -2039,7 +1990,7 @@ static void handle_ring_init_notify(const UwbLinkAppEvent *evt)
     }
 
     g_prox_ring_start_pending = true;
-    g_prox_ring_start_ms = HAL_GetTick() + PROX_RING_START_DELAY_MS;
+    g_prox_ring_start_ms      = HAL_GetTick() + PROX_RING_START_DELAY_MS;
     AppTasks_SetAnchorLocalInitLed(true);
     app_log_info("[PROX] ring notify app self=0x%04X from=0x%04X origin=0x%04X seq=%u delay=%ums",
                  g_app_cfg.short_addr,
@@ -2145,28 +2096,24 @@ bool UwbApp_Init(const UwbStackConfig *cfg)
     memset(g_tag_pull_records, 0, sizeof(g_tag_pull_records));
     memset(&g_anchor_data, 0, sizeof(g_anchor_data));
     memset(g_prox_peers, 0, sizeof(g_prox_peers));
-    g_tx_len = 0;
-    g_rx_len = 0;
-    g_prox_state = PROX_BUILD_IDLE;
-    g_prox_request_pending = false;
-    g_prox_init_seq = 0U;
-    g_prox_started_ms = 0U;
-    g_prox_next_disc_ms = 0U;
-    g_prox_disc_request_count = 0U;
-    g_prox_disc_queued_count = 0U;
-    g_prox_ring_next_anchor = 0U;
-    g_prox_ring_origin_anchor = 0U;
-    g_prox_ring_token_seq = 0U;
-    g_prox_ring_prev_anchor = 0U;
-    g_prox_ring_start_pending = false;
-    g_prox_ring_start_ms = 0U;
+    g_tx_len                   = 0;
+    g_rx_len                   = 0;
+    g_prox_state               = PROX_BUILD_IDLE;
+    g_prox_request_pending     = false;
+    g_prox_init_seq            = 0U;
+    g_prox_started_ms          = 0U;
+    g_prox_next_disc_ms        = 0U;
+    g_prox_disc_request_count  = 0U;
+    g_prox_disc_queued_count   = 0U;
+    g_prox_ring_next_anchor    = 0U;
+    g_prox_ring_origin_anchor  = 0U;
+    g_prox_ring_token_seq      = 0U;
+    g_prox_ring_prev_anchor    = 0U;
+    g_prox_ring_start_pending  = false;
+    g_prox_ring_start_ms       = 0U;
     g_prox_ring_notify_pending = false;
-    g_prox_ring_notify_target = 0U;
+    g_prox_ring_notify_target  = 0U;
     g_prox_ring_notify_next_ms = 0U;
-
-    if (cfg->role == APP_ROLE_ANCHOR) {
-        prox_prepare_empty_tx_table();
-    }
 
     return true;
 }
@@ -2212,9 +2159,9 @@ bool UwbApp_RequestProxBuild(void)
     }
 
     g_prox_ring_origin_anchor = g_app_cfg.short_addr;
-    g_prox_ring_prev_anchor = 0U;
-    g_prox_ring_token_seq = prox_next_ring_seq();
-    g_prox_request_pending = true;
+    g_prox_ring_prev_anchor   = 0U;
+    g_prox_ring_token_seq     = prox_next_ring_seq();
+    g_prox_request_pending    = true;
     AppTasks_SetAnchorGlobalInitLed(true);
     AppTasks_SetAnchorLocalInitLed(true);
     AppTasks_SetAnchorNotifyInitLed(false);
