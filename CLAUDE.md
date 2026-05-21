@@ -6,14 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **No `%llu` / `%lld`** in `printf`/`vsnprintf`. newlib-nano does not support 64-bit format specifiers. Use split-32 hex: `0x%02lX%08lX` with `(uint32_t)(val>>32)`, `(uint32_t)val`, or cast to `(unsigned long)` and use `%lu`.
 - **If a log line shows `local=lu` or `rx_ts=lu`**, all subsequent formatted fields in that line are unreliable — varargs have been misaligned by a skipped 64-bit argument.
-- **Known existing `%llu` usage** in `APP/task/app_tasks.c:658` (UWB ASCII format) and `APP/service/storage_service.c:91,111` (GNSS/IMU ASCII format) — these produce garbage for the timestamp field on target.
 - **FreeRTOS heap is 128KB** (`configTOTAL_HEAP_SIZE = 131072`). Every task stack and queue is allocated from this pool.
 - **No unit test framework.** All testing is on hardware. Branch `testPro` exists for ad-hoc on-target tests.
 
 ## 项目概述
 
 STM32H743VITX (Cortex-M7) 嵌入式多源传感器数据采集系统，FreeRTOS。
-采集 DW1000 UWB 测距、UM960 GNSS 定位、ASM330LHH IMU 数据，统一时间戳后写入 SD 卡。
+采集 DW1000 UWB 测距、UM960 GNSS 定位、ASM330LHH IMU 数据，统一时间戳后输出到 USART1 和 SD 卡。
+当前主链路已完成：UWB Discovery/DS-TWR、Anchor 邻近表构建、Tag DATA 拉表、GNSS/IMU 采集、数据排序、统一 ASCII 日志和 SD 双缓冲写入。
 
 ## 构建系统
 
@@ -69,7 +69,8 @@ Linker: `_Min_Heap_Size = 4KB`, `_Min_Stack_Size = 8KB`。FreeRTOS 使用独立�
 | usartCMD | 768 | Low | app_tasks.c | DMA-idle / log notify |
 | uwbPhy | 1024 | AboveNormal | uwb_stack.c | DW1000 IRQ notify |
 | uwbLink | 1536 | AboveNormal | uwb_stack.c | PHY evt + poll 50ms |
-| uwbApp | 1024 | Normal | uwb_stack.c | Link app-event queue |
+| uwbApp | 1536 | Normal | uwb_stack.c | Link app-event queue + 1ms poll |
+| uwbLoss | 1024 | Normal | uwb_loss_test.c | Tag role loss queue |
 
 ## 数据流
 
@@ -112,9 +113,9 @@ APP/UWB/
 
 PHY 共享内存池 (`uwb_shared_data_slot_t`): LINK 写帧到池，PHY 读取发送；PHY 收帧写池，LINK 读取处理。所有权通过 `uwb_obj_ctl_t` (owner + state) 跟踪。
 
-**帧类型:** DISCOVERY_REQ/ACK, RANGING_REQ/RESP, DATA_PREP_REQ/ACK, DATA_PULL_REQ, DATA_FRAGMENT, DATA_DONE
+**帧类型:** DISCOVERY_REQ/ACK, RANGING_REQ/RESP, DATA_CFG/CTRL/FRAG/RESP, DATA_DONE, RING_INIT/ACK
 
-**当前状态:** Discovery + Ranging (DS-TWR) 流程可用。DATA_* 帧类型已定义但 LINK 层尚未处理。
+**当前状态:** Discovery + Ranging (DS-TWR)、DATA 会话、Anchor 邻近表构建/拉取、Tag 侧丢包统计均已接入当前运行链路。
 
 **角色:** Tag (主动发起 Discovery/Ranging) vs Anchor/Base (被动响应 RT reply)。
 
@@ -139,9 +140,9 @@ PHY 共享内存池 (`uwb_shared_data_slot_t`): LINK 写帧到池，PHY 读取�
 |---------|---------|-------|
 | ConfigService | Load/Save/Get, GetDefaults, IsValid | Flash 持久化, AppConfig: pan_id, short_addr, role, log_level |
 | DataService | Send/Receive | FreeRTOS queue (64×AppDataNode), 统一数据通道 |
-| TimeService | GetTimestamp, OnPpsIrq | TIM2 本地时钟 + GNSS PPS 同步, UTC cache |
+| TimeService | GetTimestamp, OnPpsIrq | TIM16 20 kHz 本地时钟 + GNSS PPS 同步, UTC cache |
 | LogService | Write/VWrite | app_log_info/warn/error 宏, 写入 USART log slot |
-| StorageService | Mount/OpenNextLog/WriteBlock | FatFs on SDMMC1, 日志文件 `uwb-gnss-imu-sampling-N.log` |
+| StorageService | Mount/OpenNextLog/WriteBlock | FatFs on SDMMC1, 日志文件 `gnss-imu-uwb-%04lu.log` |
 
 ## 配置命令 (CONFIG 模式, USART1 460800)
 
@@ -158,7 +159,6 @@ APP/                 # 自研业务代码
 ├── device/          # 设备驱动封装 (gnss_parser, imu_device)
 ├── service/         # 跨模块服务 (config, time, data, storage, log)
 └── task/            # 任务定义 (app_tasks, app_irq)
-APP-copy/            # 重构前快照（不参与构建）
 Core/                # CubeMX 生成（不改）
 Drivers/             # HAL + CMSIS（不改）
 FATFS/               # FatFs 集成层（不改）
@@ -182,10 +182,10 @@ Thrid/               # DecaDriver (DW1000), asm330
 
 ## 当前开发状态
 
-- 已完成: GNSS, IMU, 时间同步, 配置管理, 数据排序聚合, SD 存储, 日志服务
-- 进行中: UWB 协议栈重构 (Discovery + Ranging DS-TWR 可用; DATA 传输流程未实现)
+- 已完成: GNSS, IMU, 时间同步, 配置管理, UWB Discovery/DS-TWR, Anchor 邻近表, Tag DATA 拉表, 丢包统计, 数据排序聚合, SD 存储, USART1 数据输出。
+- 维护重点: 硬件在板验证、日志分析脚本和边界情况下的队列/缓冲容量确认。
 
 ## 分支说明
 
 - `main`: 主分支
-- `UWB-V2`: 当前活跃开发分支, UWB 协议栈重构
+- `UWB-V2`: 当前活跃开发分支，UWB/GNSS/IMU 数据采集集成

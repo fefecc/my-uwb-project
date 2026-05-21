@@ -31,7 +31,7 @@
 #define APP_USART_CMD_NOTIFY_LOG         (1UL << 28)
 #define APP_USART_CMD_RX_LEN_MASK        (0x0000FFFFUL)
 #define APP_USART_CMD_TX_USE_DMA         (1U)
-#define APP_USART_CMD_TX_DMA_SIZE        (256U)
+#define APP_USART_CMD_TX_DMA_SIZE        (1024U)
 #define APP_USART_CMD_TX_DMA_BUFFER_COUNT (2U)
 #define APP_USART_CMD_TX_TIMEOUT_MS      (100U)
 #define APP_USART_LOG_SLOT_SIZE          (512U)
@@ -401,6 +401,34 @@ static void usart_log_slot_drop_oldest(AppUsartLogSlot *slot, size_t len)
     slot->dropped += (uint32_t)len;
 }
 
+static bool usart_log_slot_wait_for_space(AppUsartLogSlot *slot,
+                                          size_t len)
+{
+    if (slot == NULL || slot->buffer == NULL || slot->capacity == 0U ||
+        len == 0U || len > slot->capacity) {
+        return false;
+    }
+
+    for (;;) {
+        if (!usart_log_slot_take(slot)) {
+            return false;
+        }
+
+        if (len <= (slot->capacity - slot->used)) {
+            return true;
+        }
+
+        usart_log_slot_give(slot);
+
+        if (!scheduler_running()) {
+            return false;
+        }
+
+        notify_usart_cmd(APP_USART_CMD_NOTIFY_LOG);
+        osDelay(1U);
+    }
+}
+
 static bool usart_log_slot_output_enabled(AppUsartLogSlotId id)
 {
 #if APP_USART_RUN_DATA_ONLY
@@ -434,13 +462,24 @@ static bool usart_log_slot_write(AppUsartLogSlotId id,
     }
 
     if (len > slot->capacity) {
+        if (id == APP_USART_LOG_SLOT_DATA) {
+            usart_log_slot_give(slot);
+            return false;
+        }
         data += len - slot->capacity;
         len = slot->capacity;
     }
 
     size_t free_len = slot->capacity - slot->used;
     if (len > free_len) {
-        usart_log_slot_drop_oldest(slot, len - free_len);
+        if (id == APP_USART_LOG_SLOT_DATA) {
+            usart_log_slot_give(slot);
+            if (!usart_log_slot_wait_for_space(slot, len)) {
+                return false;
+            }
+        } else {
+            usart_log_slot_drop_oldest(slot, len - free_len);
+        }
     }
 
     size_t first = slot->capacity - slot->head;
