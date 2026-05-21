@@ -76,7 +76,12 @@ typedef struct {
     bool have_prev_exchange;
     uint64_t anchor_tx_ts;
     uint64_t tag_rx_ts;
+    uint64_t tag_tx_local_tick_20k;
     uint64_t tag_rx_local_tick_20k;
+    TimeCapture tag_tx_time_capture;
+    TimeCapture tag_rx_time_capture;
+    bool tag_tx_time_valid;
+    bool tag_rx_time_valid;
     uint64_t last_published_frame_local_tick_20k;
 } twr_anchor_record_t;
 
@@ -97,6 +102,8 @@ typedef struct {
     uint8_t total_frags;
     uint8_t next_frag;
     uint32_t session_started_ms;
+    TimeCapture start_time_capture;
+    bool start_time_valid;
     uint32_t retry_at_ms;
     uint32_t cmd_count;
     uint32_t ack_count;
@@ -308,6 +315,24 @@ static bool twr_get_published_gap_info(uint64_t last_published_frame_local_tick_
  *  DS/SS-TWR 测距计算
  * ================================================================ */
 
+static bool twr_build_average_tx_capture(const UwbTwrExchange *prev,
+                                         const UwbTwrExchange *cur,
+                                         TimeCapture *out)
+{
+    if (prev == NULL || cur == NULL || out == NULL ||
+        !prev->tag_tx_time_valid || !cur->tag_tx_time_valid ||
+        prev->tag_tx_local_tick_20k == 0U ||
+        cur->tag_tx_local_tick_20k < prev->tag_tx_local_tick_20k) {
+        return false;
+    }
+
+    *out = cur->tag_tx_time_capture;
+    out->local_tick_20k =
+        prev->tag_tx_local_tick_20k +
+        ((cur->tag_tx_local_tick_20k - prev->tag_tx_local_tick_20k) / 2U);
+    return true;
+}
+
 static bool compute_range(const UwbTwrExchange *prev,
                           const UwbTwrExchange *cur,
                           UwbRangeResult *out)
@@ -339,19 +364,28 @@ static bool compute_range(const UwbTwrExchange *prev,
                       UWB_APP_ANT_DELAY_COMP_M;
 
     memset(out, 0, sizeof(*out));
-    out->anchor_id        = cur->anchor_id;
-    out->tag_id           = g_app_cfg.short_addr;
-    out->exchange_seq     = cur->exchange_seq;
-    out->response_slot_id = cur->response_slot_id;
-    out->status_flags     = cur->status_flags;
-    out->distance_m       = distance;
-    out->quality          = cur->quality;
-    out->retry_count      = cur->retry_count;
-    out->tag_tx_ts        = cur->tag_tx_ts;
-    out->anchor_rx_ts     = cur->anchor_rx_ts;
-    out->anchor_tx_ts     = cur->anchor_tx_ts;
-    out->tag_rx_ts        = cur->tag_rx_ts;
-    out->frame_local_tick_20k = cur->tag_rx_local_tick_20k;
+    out->anchor_id            = cur->anchor_id;
+    out->tag_id               = g_app_cfg.short_addr;
+    out->exchange_seq         = cur->exchange_seq;
+    out->response_slot_id     = cur->response_slot_id;
+    out->status_flags         = cur->status_flags;
+    out->distance_m           = distance;
+    out->quality              = cur->quality;
+    out->retry_count          = cur->retry_count;
+    out->tag_tx_ts            = cur->tag_tx_ts;
+    out->anchor_rx_ts         = cur->anchor_rx_ts;
+    out->anchor_tx_ts         = cur->anchor_tx_ts;
+    out->tag_rx_ts            = cur->tag_rx_ts;
+    if (twr_build_average_tx_capture(prev, cur, &out->frame_time_capture)) {
+        out->frame_time_valid     = true;
+        out->frame_local_tick_20k = out->frame_time_capture.local_tick_20k;
+    } else if (cur->tag_rx_time_valid) {
+        out->frame_time_capture   = cur->tag_rx_time_capture;
+        out->frame_time_valid     = true;
+        out->frame_local_tick_20k = cur->tag_rx_time_capture.local_tick_20k;
+    } else {
+        out->frame_local_tick_20k = cur->tag_rx_local_tick_20k;
+    }
     return true;
 }
 
@@ -361,27 +395,25 @@ static void publish_range_result(const UwbRangeResult *result)
 
     AppDataNode node;
     memset(&node, 0, sizeof(node));
-    node.source = APP_DATA_SRC_UWB;
-    (void)TimeService_CaptureNow(&node.time_capture);
-    node.time_capture.local_tick_20k  = result->frame_local_tick_20k;
-    node.payload.uwb.anchor_id        = result->anchor_id;
-    node.payload.uwb.tag_id           = result->tag_id;
-    node.payload.uwb.exchange_seq     = result->exchange_seq;
-    node.payload.uwb.response_slot_id = result->response_slot_id;
-    node.payload.uwb.status_flags     = result->status_flags;
-    node.payload.uwb.distance_m       = result->distance_m;
-    node.payload.uwb.retry_count      = result->retry_count;
-    node.payload.uwb.rx_pacc          = result->quality.rx_pacc;
-    node.payload.uwb.fp_index         = result->quality.fp_index;
-    node.payload.uwb.fp_ampl1         = result->quality.fp_ampl1;
-    node.payload.uwb.fp_ampl2         = result->quality.fp_ampl2;
-    node.payload.uwb.fp_ampl3         = result->quality.fp_ampl3;
-    node.payload.uwb.std_noise        = result->quality.std_noise;
-    node.payload.uwb.max_noise        = result->quality.max_noise;
-    node.payload.uwb.tag_tx_ts        = result->tag_tx_ts;
-    node.payload.uwb.anchor_rx_ts     = result->anchor_rx_ts;
-    node.payload.uwb.anchor_tx_ts     = result->anchor_tx_ts;
-    node.payload.uwb.tag_rx_ts        = result->tag_rx_ts;
+    node.source = APP_DATA_SRC_UWB_TWR;
+    if (result->frame_time_valid) {
+        node.time_capture = result->frame_time_capture;
+    } else {
+        (void)TimeService_CaptureNow(&node.time_capture);
+        node.time_capture.local_tick_20k = result->frame_local_tick_20k;
+    }
+    node.payload.uwb_twr.anchor_id        = result->anchor_id;
+    node.payload.uwb_twr.tag_id           = result->tag_id;
+    node.payload.uwb_twr.exchange_seq     = result->exchange_seq;
+    node.payload.uwb_twr.status_flags     = result->status_flags;
+    node.payload.uwb_twr.distance_m       = result->distance_m;
+    node.payload.uwb_twr.rx_pacc          = result->quality.rx_pacc;
+    node.payload.uwb_twr.fp_index         = result->quality.fp_index;
+    node.payload.uwb_twr.fp_ampl1         = result->quality.fp_ampl1;
+    node.payload.uwb_twr.fp_ampl2         = result->quality.fp_ampl2;
+    node.payload.uwb_twr.fp_ampl3         = result->quality.fp_ampl3;
+    node.payload.uwb_twr.std_noise        = result->quality.std_noise;
+    node.payload.uwb_twr.max_noise        = result->quality.max_noise;
 
     if (!DataService_Send(&node, 0)) {
         app_log_warn("UWB data queue full");
@@ -1200,7 +1232,14 @@ static twr_anchor_record_t *find_anchor_record(uint16_t anchor_id)
             g_anchor_records[i].have_prev_exchange                  = false;
             g_anchor_records[i].anchor_tx_ts                        = 0;
             g_anchor_records[i].tag_rx_ts                           = 0;
+            g_anchor_records[i].tag_tx_local_tick_20k               = 0;
             g_anchor_records[i].tag_rx_local_tick_20k               = 0;
+            memset(&g_anchor_records[i].tag_tx_time_capture, 0,
+                   sizeof(g_anchor_records[i].tag_tx_time_capture));
+            memset(&g_anchor_records[i].tag_rx_time_capture, 0,
+                   sizeof(g_anchor_records[i].tag_rx_time_capture));
+            g_anchor_records[i].tag_tx_time_valid                   = false;
+            g_anchor_records[i].tag_rx_time_valid                   = false;
             g_anchor_records[i].last_published_frame_local_tick_20k = 0;
             return &g_anchor_records[i];
         }
@@ -1216,7 +1255,12 @@ static void twr_record_exchange(twr_anchor_record_t *rec,
     rec->have_prev_exchange    = true;
     rec->anchor_tx_ts          = exchange->anchor_tx_ts;
     rec->tag_rx_ts             = exchange->tag_rx_ts;
+    rec->tag_tx_local_tick_20k = exchange->tag_tx_local_tick_20k;
     rec->tag_rx_local_tick_20k = exchange->tag_rx_local_tick_20k;
+    rec->tag_tx_time_capture   = exchange->tag_tx_time_capture;
+    rec->tag_rx_time_capture   = exchange->tag_rx_time_capture;
+    rec->tag_tx_time_valid     = exchange->tag_tx_time_valid;
+    rec->tag_rx_time_valid     = exchange->tag_rx_time_valid;
 }
 
 static void handle_twr_exchange(const UwbTwrExchange *exchange)
@@ -1249,7 +1293,12 @@ static void handle_twr_exchange(const UwbTwrExchange *exchange)
     prev.anchor_id             = rec->anchor_id;
     prev.anchor_tx_ts          = rec->anchor_tx_ts;
     prev.tag_rx_ts             = rec->tag_rx_ts;
+    prev.tag_tx_local_tick_20k = rec->tag_tx_local_tick_20k;
     prev.tag_rx_local_tick_20k = rec->tag_rx_local_tick_20k;
+    prev.tag_tx_time_capture   = rec->tag_tx_time_capture;
+    prev.tag_rx_time_capture   = rec->tag_rx_time_capture;
+    prev.tag_tx_time_valid     = rec->tag_tx_time_valid;
+    prev.tag_rx_time_valid     = rec->tag_rx_time_valid;
 
     if (!compute_range(&prev, exchange, &result)) {
         rec->last_published_frame_local_tick_20k = 0U;
@@ -1284,6 +1333,7 @@ static void handle_twr_exchange(const UwbTwrExchange *exchange)
         prox_accumulate_result(&result);
         tag_maybe_queue_data_pull(&result);
         publish_range_result(&result);
+        AppTasks_NotifyUwbRangeSolved();
         log_twr_frame(gap_class == TWR_GAP_SHORT ? "DS_SHORT" : "DS_LONG",
                       exchange, &result);
     }
@@ -1306,15 +1356,17 @@ static void tag_reset_session(void)
     g_tag_data.total_frags        = 0;
     g_tag_data.next_frag          = 0;
     g_tag_data.session_started_ms = 0;
-    g_tag_data.retry_at_ms        = 0;
-    g_tag_data.cmd_count          = 0;
-    g_tag_data.ack_count          = 0;
-    g_tag_data.wait_count         = 0;
-    g_tag_data.frag_count         = 0;
-    g_tag_data.drop_count         = 0;
-    g_tag_data.cmd_pending        = false;
-    g_tag_data.completion_logged  = false;
-    g_rx_len                      = 0;
+    memset(&g_tag_data.start_time_capture, 0, sizeof(g_tag_data.start_time_capture));
+    g_tag_data.start_time_valid  = false;
+    g_tag_data.retry_at_ms       = 0;
+    g_tag_data.cmd_count         = 0;
+    g_tag_data.ack_count         = 0;
+    g_tag_data.wait_count        = 0;
+    g_tag_data.frag_count        = 0;
+    g_tag_data.drop_count        = 0;
+    g_tag_data.cmd_pending       = false;
+    g_tag_data.completion_logged = false;
+    g_rx_len                     = 0;
 }
 
 static void tag_submit_cmd(const UwbLinkCmd *cmd)
@@ -1402,6 +1454,8 @@ static void tag_start_session(uint16_t target_id)
     g_tag_data.target_id          = target_id;
     g_tag_data.session_id         = session_id;
     g_tag_data.session_started_ms = HAL_GetTick();
+    g_tag_data.start_time_valid =
+        TimeService_CaptureNow(&g_tag_data.start_time_capture);
     memset(g_rx_buf, 0, sizeof(g_rx_buf));
     g_rx_len = 0;
 
@@ -1442,6 +1496,64 @@ static void tag_log_session_complete(void)
     g_tag_data.completion_logged = true;
 }
 
+static void tag_publish_anchor_data_sample(uint16_t table_self,
+                                           uint16_t table_seq,
+                                           uint16_t table_crc,
+                                           uint8_t entry_count)
+{
+    AppDataNode node;
+    memset(&node, 0, sizeof(node));
+
+    node.source = APP_DATA_SRC_UWB_ANCHOR_DATA;
+    if (g_tag_data.start_time_valid) {
+        node.time_capture = g_tag_data.start_time_capture;
+    } else {
+        (void)TimeService_CaptureNow(&node.time_capture);
+    }
+
+    AppUwbAnchorDataSample *sample = &node.payload.uwb_anchor_data;
+    sample->source_anchor_id =
+        table_self != 0U ? table_self : g_tag_data.target_id;
+    sample->table_seq   = table_seq;
+    sample->table_crc   = table_crc;
+    sample->total_len   = g_tag_data.total_len;
+    sample->total_frags = g_tag_data.total_frags;
+    sample->entry_count = entry_count;
+
+    for (uint8_t i = 0U; i < entry_count; ++i) {
+        uint16_t off             = (uint16_t)(PROX_TABLE_HEADER_LEN +
+                                  i * PROX_TABLE_ENTRY_LEN);
+        AppUwbAnchorEntry *entry = &sample->entries[i];
+
+        entry->self_anchor   = UwbProtocol_ReadLe16(&g_rx_buf[off + 0U]);
+        entry->peer_anchor   = UwbProtocol_ReadLe16(&g_rx_buf[off + 2U]);
+        entry->dist_cm       = UwbProtocol_ReadLe16(&g_rx_buf[off + 4U]);
+        entry->dist_std_cm   = UwbProtocol_ReadLe16(&g_rx_buf[off + 6U]);
+        entry->avg_pacc      = UwbProtocol_ReadLe16(&g_rx_buf[off + 8U]);
+        entry->avg_fp_index  = UwbProtocol_ReadLe16(&g_rx_buf[off + 10U]);
+        entry->avg_fp_ampl1  = UwbProtocol_ReadLe16(&g_rx_buf[off + 12U]);
+        entry->avg_fp_ampl2  = UwbProtocol_ReadLe16(&g_rx_buf[off + 14U]);
+        entry->avg_fp_ampl3  = UwbProtocol_ReadLe16(&g_rx_buf[off + 16U]);
+        entry->avg_std_noise = UwbProtocol_ReadLe16(&g_rx_buf[off + 18U]);
+        entry->avg_max_noise = UwbProtocol_ReadLe16(&g_rx_buf[off + 20U]);
+        entry->avg_rx_power_dbm_x100 =
+            (int16_t)UwbProtocol_ReadLe16(&g_rx_buf[off + 22U]);
+        entry->avg_fp_power_dbm_x100 =
+            (int16_t)UwbProtocol_ReadLe16(&g_rx_buf[off + 24U]);
+        entry->samples        = g_rx_buf[off + 26U];
+        entry->quality        = g_rx_buf[off + 27U];
+        entry->flags          = g_rx_buf[off + 28U];
+        entry->rx_error_flags = UwbProtocol_ReadLe32(&g_rx_buf[off + 29U]);
+        entry->lde_status     = UwbProtocol_ReadLe16(&g_rx_buf[off + 33U]);
+    }
+
+    if (!DataService_Send(&node, 0)) {
+        app_log_warn("[APP] UWB_ANCHOR_DATA queue full anchor=0x%04X entries=%u",
+                     sample->source_anchor_id,
+                     (unsigned)entry_count);
+    }
+}
+
 static bool tag_verify_prox_table(void)
 {
     uint16_t got_crc = crc16_ccitt(g_rx_buf, g_rx_len);
@@ -1475,7 +1587,15 @@ static bool tag_verify_prox_table(void)
     }
 
     entry_count = g_rx_buf[1];
-    table_len   = (uint16_t)(PROX_TABLE_HEADER_LEN +
+    if (entry_count > APP_UWB_ANCHOR_DATA_MAX_ENTRIES) {
+        app_log_warn("[APP] PROX_TABLE_INVALID anchor=0x%04X entries=%u max=%u",
+                     g_tag_data.target_id,
+                     (unsigned)entry_count,
+                     (unsigned)APP_UWB_ANCHOR_DATA_MAX_ENTRIES);
+        return false;
+    }
+
+    table_len = (uint16_t)(PROX_TABLE_HEADER_LEN +
                            entry_count * PROX_TABLE_ENTRY_LEN);
     if (table_len != g_rx_len) {
         app_log_warn("[APP] PROX_TABLE_INVALID anchor=0x%04X entries=%u len=%u expect=%u",
@@ -1545,6 +1665,11 @@ static bool tag_verify_prox_table(void)
                      g_tag_data.target_id,
                      (unsigned)(entry_count - log_count));
     }
+
+    tag_publish_anchor_data_sample(table_self,
+                                   table_seq,
+                                   table_crc,
+                                   entry_count);
 
     return true;
 }

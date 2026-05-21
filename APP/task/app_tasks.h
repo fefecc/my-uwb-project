@@ -19,6 +19,8 @@ bool AppTasks_LogWriteSd(const char *text, size_t len);
 void AppTasks_SetAnchorLocalInitLed(bool on);
 void AppTasks_SetAnchorGlobalInitLed(bool on);
 void AppTasks_SetAnchorNotifyInitLed(bool on);
+void AppTasks_NotifyUwbRangeSolved(void);
+void AppTasks_NotifySdWriteDone(void);
 
 typedef enum {
     LED_LOSS_MODE_OFF = 0,

@@ -30,9 +30,9 @@ static bool load_stack_config(UwbStackConfig *out)
     }
 
     memset(out, 0, sizeof(*out));
-    out->pan_id = cfg->pan_id;
-    out->short_addr = cfg->short_addr;
-    out->role = (AppDeviceRole)cfg->role;
+    out->pan_id        = cfg->pan_id;
+    out->short_addr    = cfg->short_addr;
+    out->role          = (AppDeviceRole)cfg->role;
     out->frame_ctrl[0] = cfg->frame_ctrl[0];
     out->frame_ctrl[1] = cfg->frame_ctrl[1];
     return true;
@@ -67,19 +67,19 @@ bool UwbStack_StartFromConfig(void)
     UWB_DeviceInitFromConfig();
 
     const osThreadAttr_t phy_attr = {
-        .name = "uwbPhy",
+        .name       = "uwbPhy",
         .stack_size = 1024U * 4U,
-        .priority = osPriorityAboveNormal,
+        .priority   = osPriorityAboveNormal,
     };
     const osThreadAttr_t link_attr = {
-        .name = "uwbLink",
+        .name       = "uwbLink",
         .stack_size = 1536U * 4U,
-        .priority = osPriorityNormal,
+        .priority   = osPriorityNormal,
     };
     const osThreadAttr_t app_attr = {
-        .name = "uwbApp",
-        .stack_size = 1024U * 4U,
-        .priority = osPriorityNormal,
+        .name       = "uwbApp",
+        .stack_size = 1536U * 4U,
+        .priority   = osPriorityNormal,
     };
 
     if (!UwbPhy_StartThread(&phy_attr) ||

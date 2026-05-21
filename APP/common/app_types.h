@@ -17,15 +17,16 @@ typedef enum {
 } AppMode;
 
 typedef enum {
-    APP_ROLE_TAG = 0,
+    APP_ROLE_TAG    = 0,
     APP_ROLE_ANCHOR = 1,
 } AppDeviceRole;
 
 typedef enum {
-    APP_DATA_SRC_NONE = 0,
-    APP_DATA_SRC_GNSS = 1,
-    APP_DATA_SRC_IMU = 2,
-    APP_DATA_SRC_UWB = 3,
+    APP_DATA_SRC_NONE            = 0,
+    APP_DATA_SRC_GNSS            = 1,
+    APP_DATA_SRC_IMU             = 2,
+    APP_DATA_SRC_UWB_TWR         = 3,
+    APP_DATA_SRC_UWB_ANCHOR_DATA = 4,
 } AppDataSource;
 
 /* UWB TWR result status bits.
@@ -55,14 +56,14 @@ typedef struct {
     int16_t gyro[3];
 } AppImuSample;
 
+#define APP_UWB_ANCHOR_DATA_MAX_ENTRIES (8U)
+
 typedef struct {
     uint16_t anchor_id;
     uint16_t tag_id;
     uint16_t exchange_seq;
-    uint16_t response_slot_id;
     uint16_t status_flags;
     double distance_m;
-    uint8_t retry_count;
     uint16_t rx_pacc;
     uint16_t fp_index;
     uint16_t fp_ampl1;
@@ -70,19 +71,48 @@ typedef struct {
     uint16_t fp_ampl3;
     uint16_t std_noise;
     uint16_t max_noise;
-    uint64_t tag_tx_ts;
-    uint64_t anchor_rx_ts;
-    uint64_t anchor_tx_ts;
-    uint64_t tag_rx_ts;
-} AppUwbSample;
+} AppUwbTwrSample;
+
+typedef struct {
+    uint16_t self_anchor;
+    uint16_t peer_anchor;
+    uint16_t dist_cm;
+    uint16_t dist_std_cm;
+    uint16_t avg_pacc;
+    uint16_t avg_fp_index;
+    uint16_t avg_fp_ampl1;
+    uint16_t avg_fp_ampl2;
+    uint16_t avg_fp_ampl3;
+    uint16_t avg_std_noise;
+    uint16_t avg_max_noise;
+    int16_t avg_rx_power_dbm_x100;
+    int16_t avg_fp_power_dbm_x100;
+    uint8_t samples;
+    uint8_t quality;
+    uint8_t flags;
+    uint32_t rx_error_flags;
+    uint16_t lde_status;
+} AppUwbAnchorEntry;
+
+typedef struct {
+    uint16_t source_anchor_id;
+    uint16_t table_seq;
+    uint16_t table_crc;
+    uint16_t total_len;
+    uint8_t total_frags;
+    uint8_t entry_count;
+    AppUwbAnchorEntry entries[APP_UWB_ANCHOR_DATA_MAX_ENTRIES];
+} AppUwbAnchorDataSample;
 
 typedef struct {
     AppDataSource source;
     TimeCapture time_capture;
+    uint32_t enqueue_seq;
     union {
         AppGnssSample gnss;
         AppImuSample imu;
-        AppUwbSample uwb;
+        AppUwbTwrSample uwb_twr;
+        AppUwbAnchorDataSample uwb_anchor_data;
     } payload;
 } AppDataNode;
 

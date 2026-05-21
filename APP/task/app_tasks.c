@@ -30,10 +30,12 @@
 #define APP_USART_CMD_NOTIFY_TX_DONE     (1UL << 29)
 #define APP_USART_CMD_NOTIFY_LOG         (1UL << 28)
 #define APP_USART_CMD_RX_LEN_MASK        (0x0000FFFFUL)
-#define APP_USART_CMD_TX_USE_DMA         (0U)
+#define APP_USART_CMD_TX_USE_DMA         (1U)
 #define APP_USART_CMD_TX_DMA_SIZE        (256U)
+#define APP_USART_CMD_TX_DMA_BUFFER_COUNT (2U)
 #define APP_USART_CMD_TX_TIMEOUT_MS      (100U)
 #define APP_USART_LOG_SLOT_SIZE          (512U)
+#define APP_USART_DATA_LOG_SLOT_SIZE     (4096U)
 #define APP_USART_LOSS_LOG_SLOT_SIZE     (1024U)
 #define APP_DATA_SORT_WINDOW             (10U)
 #define APP_SD_BLOCK_SIZE                (16U * 1024U)
@@ -41,8 +43,11 @@
 #define APP_KEY_SHORT_PRESS_MS           (1000U)
 #define APP_KEY_LONG_PRESS_MS            (2000U)
 #define APP_SUPPRESS_SD_WRITE_ERROR_LOGS (1U)
+#define APP_UWB_DEBUG_SD_LOG_ENABLED     (0U)
 #define APP_LED_LOSS_CMD_QUEUE_LEN       (4U)
 #define APP_KEY_EVENT_QUEUE_LEN          (4U)
+#define APP_LED_SD_WRITE_PULSE_MS        (80U)
+#define APP_USART_RUN_DATA_ONLY          (1U)
 
 #if APP_SUPPRESS_SD_WRITE_ERROR_LOGS
 static void app_log_sd_error(const char *fmt, ...)
@@ -98,6 +103,19 @@ typedef enum {
 typedef struct {
     AppKeyEventType type;
 } AppKeyEventMsg;
+
+typedef struct {
+    uint32_t range_event_seen;
+    uint32_t sd_write_event_seen;
+    uint32_t sd_pulse_started_ms;
+    bool range_led_on;
+    bool sd_pulse_active;
+} AppTagNormalLedCtx;
+
+typedef struct {
+    TimeCapture time_capture;
+    bool time_valid;
+} AppGnssFrameContext;
 
 typedef struct {
     uint8_t *buffer;
@@ -180,6 +198,11 @@ static TaskHandle_t g_usart_cmd_task;
 
 static uint8_t g_gnss_rx_buffer[APP_GNSS_RX_BUFFER_SIZE];
 static GnssParser g_gnss_parser;
+static AppGnssFrameContext g_gnss_frame_ctx;
+static TimeCapture g_gnss_idle_time_capture;
+static volatile bool g_gnss_idle_time_valid;
+static TimeCapture g_imu_irq_time_capture;
+static volatile bool g_imu_irq_time_valid;
 static uint8_t g_usart_cmd_rx_buffer[APP_USART_CMD_RX_BUFFER_SIZE];
 static char g_usart_cmd_line[APP_USART_CMD_RX_BUFFER_SIZE + 1U];
 static uint32_t g_usart_cmd_line_len;
@@ -192,11 +215,14 @@ static volatile HAL_UART_StateTypeDef g_usart_cmd_tx_state;
 static AppUsartLogSlot g_usart_log_slots[APP_USART_LOG_SLOT_COUNT];
 static bool g_usart_log_ready;
 static uint32_t g_usart_log_next_slot;
-static uint8_t g_usart_cmd_tx_dma_buffer[APP_USART_CMD_TX_DMA_SIZE];
+static uint8_t g_usart_cmd_tx_dma_buffer[APP_USART_CMD_TX_DMA_BUFFER_COUNT][APP_USART_CMD_TX_DMA_SIZE];
 static uint16_t g_usart_cmd_tx_dma_len;
+static uint8_t g_usart_cmd_tx_dma_active;
+static uint8_t g_usart_cmd_tx_dma_pending_index;
 static bool g_usart_cmd_tx_dma_pending;
 static volatile bool g_usart_cmd_tx_dma_busy;
 static uint8_t g_usart_log_slot_storage[APP_USART_LOG_SLOT_COUNT][APP_USART_LOG_SLOT_SIZE];
+static uint8_t g_usart_data_log_slot_storage[APP_USART_DATA_LOG_SLOT_SIZE];
 static uint8_t g_usart_loss_log_slot_storage[APP_USART_LOSS_LOG_SLOT_SIZE];
 
 static uint8_t g_sd_main_block[APP_SD_BLOCK_SIZE];
@@ -222,6 +248,8 @@ static QueueHandle_t g_key_event_queue;
 static volatile bool g_anchor_led_local_init;
 static volatile bool g_anchor_led_global_init;
 static volatile bool g_anchor_led_notify_init;
+static volatile uint32_t g_tag_led_range_event_count;
+static volatile uint32_t g_tag_led_sd_write_event_count;
 
 static uint32_t sd_ready_bit(AppSdBlockId id)
 {
@@ -240,8 +268,10 @@ static const char *data_source_name(AppDataSource source)
             return "GNSS";
         case APP_DATA_SRC_IMU:
             return "IMU";
-        case APP_DATA_SRC_UWB:
-            return "UWB";
+        case APP_DATA_SRC_UWB_TWR:
+            return "UWB_TWR";
+        case APP_DATA_SRC_UWB_ANCHOR_DATA:
+            return "UWB_ANCHOR_DATA";
         default:
             return "UNKNOWN";
     }
@@ -307,6 +337,10 @@ void AppTasks_LogInit(void)
         memset(slot, 0, sizeof(*slot));
         slot->buffer   = g_usart_log_slot_storage[i];
         slot->capacity = APP_USART_LOG_SLOT_SIZE;
+        if (i == APP_USART_LOG_SLOT_DATA) {
+            slot->buffer   = g_usart_data_log_slot_storage;
+            slot->capacity = APP_USART_DATA_LOG_SLOT_SIZE;
+        }
         if (i == APP_USART_LOG_SLOT_LOSS) {
             slot->buffer   = g_usart_loss_log_slot_storage;
             slot->capacity = APP_USART_LOSS_LOG_SLOT_SIZE;
@@ -319,6 +353,8 @@ void AppTasks_LogInit(void)
 
     g_usart_log_next_slot      = APP_USART_LOG_SLOT_CMD;
     g_usart_cmd_tx_dma_len     = 0U;
+    g_usart_cmd_tx_dma_active  = 0U;
+    g_usart_cmd_tx_dma_pending_index = 0U;
     g_usart_cmd_tx_dma_pending = false;
     g_usart_cmd_tx_dma_busy    = false;
     g_usart_cmd_tx_status      = HAL_OK;
@@ -365,6 +401,19 @@ static void usart_log_slot_drop_oldest(AppUsartLogSlot *slot, size_t len)
     slot->dropped += (uint32_t)len;
 }
 
+static bool usart_log_slot_output_enabled(AppUsartLogSlotId id)
+{
+#if APP_USART_RUN_DATA_ONLY
+    if (g_app_mode != APP_MODE_CONFIG && id != APP_USART_LOG_SLOT_DATA) {
+        return false;
+    }
+#else
+    (void)id;
+#endif
+
+    return true;
+}
+
 static bool usart_log_slot_write(AppUsartLogSlotId id,
                                  const uint8_t *data,
                                  size_t len)
@@ -372,6 +421,10 @@ static bool usart_log_slot_write(AppUsartLogSlotId id,
     if (!g_usart_log_ready || data == NULL || len == 0U ||
         id >= APP_USART_LOG_SLOT_COUNT) {
         return false;
+    }
+
+    if (!usart_log_slot_output_enabled(id)) {
+        return true;
     }
 
     AppUsartLogSlot *slot = &g_usart_log_slots[id];
@@ -534,6 +587,31 @@ bool AppTasks_SendLedLossCmd(const LedLossCmd *cmd)
     return xQueueSend(g_led_loss_cmd_queue, cmd, 0) == pdPASS;
 }
 
+static void app_led_count_event(volatile uint32_t *counter)
+{
+    if (counter == NULL) {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    (*counter)++;
+    taskEXIT_CRITICAL();
+}
+
+static uint32_t app_led_read_event_count(volatile uint32_t *counter)
+{
+    uint32_t value = 0U;
+
+    if (counter == NULL) {
+        return 0U;
+    }
+
+    taskENTER_CRITICAL();
+    value = *counter;
+    taskEXIT_CRITICAL();
+    return value;
+}
+
 void AppTasks_SetAnchorLocalInitLed(bool on)
 {
     g_anchor_led_local_init = on;
@@ -547,6 +625,16 @@ void AppTasks_SetAnchorGlobalInitLed(bool on)
 void AppTasks_SetAnchorNotifyInitLed(bool on)
 {
     g_anchor_led_notify_init = on;
+}
+
+void AppTasks_NotifyUwbRangeSolved(void)
+{
+    app_led_count_event(&g_tag_led_range_event_count);
+}
+
+void AppTasks_NotifySdWriteDone(void)
+{
+    app_led_count_event(&g_tag_led_sd_write_event_count);
 }
 
 static bool app_key_publish_event(AppKeyEventType type)
@@ -835,6 +923,7 @@ static bool uwb_sd_fifo_write(const uint8_t *data, size_t len)
     return true;
 }
 
+#if APP_UWB_DEBUG_SD_LOG_ENABLED
 static bool uwb_sd_fifo_lock_block(AppSdBlockId id,
                                    const uint8_t **data, size_t *len)
 {
@@ -892,6 +981,7 @@ static uint32_t uwb_sd_fifo_ready_bits(void)
     uwb_sd_fifo_give();
     return bits;
 }
+#endif
 
 static bool sd_fifo_lock_block(AppSdBlockId id, const uint8_t **data, size_t *len)
 {
@@ -974,33 +1064,103 @@ static size_t bounded_strlen(const char *text, size_t max_len)
     return len;
 }
 
+static void format_u64_dec(uint64_t value, char *out, size_t out_size)
+{
+    char tmp[21];
+    size_t pos = 0U;
+
+    if (out == NULL || out_size == 0U) {
+        return;
+    }
+    out[0] = '\0';
+
+    do {
+        tmp[pos++] = (char)('0' + (value % 10ULL));
+        value /= 10ULL;
+    } while (value != 0ULL && pos < sizeof(tmp));
+
+    if (pos >= out_size) {
+        pos = out_size - 1U;
+    }
+
+    for (size_t i = 0U; i < pos; ++i) {
+        out[i] = tmp[pos - 1U - i];
+    }
+    out[pos] = '\0';
+}
+
+static void format_tick20k_ms(uint64_t tick, char *out, size_t out_size)
+{
+    char ms_int[21];
+    uint64_t whole_ms;
+    uint32_t frac_ms_x1000;
+    int n;
+
+    if (out == NULL || out_size == 0U) {
+        return;
+    }
+    out[0] = '\0';
+
+    whole_ms      = tick / 20ULL;
+    frac_ms_x1000 = (uint32_t)((tick % 20ULL) * 50ULL);
+    format_u64_dec(whole_ms, ms_int, sizeof(ms_int));
+
+    n = snprintf(out, out_size, "%s.%03lu",
+                 ms_int,
+                 (unsigned long)frac_ms_x1000);
+    if (n <= 0 || (size_t)n >= out_size) {
+        out[0] = '\0';
+    }
+}
+
+static bool take_cached_time_capture(TimeCapture *out,
+                                     TimeCapture *cache,
+                                     volatile bool *valid)
+{
+    bool ok = false;
+
+    if (out == NULL || cache == NULL || valid == NULL) {
+        return false;
+    }
+
+    taskENTER_CRITICAL();
+    if (*valid) {
+        *out  = *cache;
+        *valid = false;
+        ok    = true;
+    }
+    taskEXIT_CRITICAL();
+
+    return ok;
+}
+
 static size_t format_node_ascii(const AppDataNode *node,
                                 const TimeTimestamp *ts,
                                 char *line,
                                 size_t line_size)
 {
     int n = 0;
+    char mono_ms[25];
 
     if (node == NULL || ts == NULL || line == NULL || line_size == 0U) {
         return 0;
     }
 
-    uint32_t week        = ts->utc_valid ? ts->local_utc.week : 0U;
-    uint32_t week_ms     = ts->utc_valid ? ts->local_utc.week_ms : 0U;
-    uint32_t week_sec    = week_ms / 1000U;
-    uint32_t week_ms_rem = week_ms % 1000U;
+    format_tick20k_ms(node->time_capture.local_tick_20k,
+                      mono_ms,
+                      sizeof(mono_ms));
+
+    uint32_t week    = ts->utc_valid ? ts->local_utc.week : 0U;
+    uint32_t week_ms = ts->utc_valid ? ts->local_utc.week_ms : 0U;
 
     switch (node->source) {
         case APP_DATA_SRC_GNSS:
             n = snprintf(line, line_size,
-                         "0x%02lX%08lX,%.3f,%lu,%lu.%03lu,%u,GNSS,%.17f,%.17f,%.17f,%lu,%.9f,%.9f,%.9f,%lu,%lu,%.9f,%.9f,%u,%u\r\n",
-                         (uint32_t)(ts->local_clock.sec >> 32),
-                         (uint32_t)(ts->local_clock.sec & 0xFFFFFFFF),
-                         (double)ts->local_clock.ms,
+                         "%lu,%lu,%u,%s,GNSS,%.9f,%.9f,%.4f,%lu,%.4f,%.4f,%.4f,%lu,%lu,%.3f,%.3f,%u,%u\r\n",
                          (unsigned long)week,
-                         (unsigned long)week_sec,
-                         (unsigned long)week_ms_rem,
+                         (unsigned long)week_ms,
                          ts->utc_valid ? 1U : 0U,
+                         mono_ms,
                          node->payload.gnss.lat,
                          node->payload.gnss.lon,
                          node->payload.gnss.hgt,
@@ -1018,14 +1178,11 @@ static size_t format_node_ascii(const AppDataNode *node,
 
         case APP_DATA_SRC_IMU:
             n = snprintf(line, line_size,
-                         "0x%02lX%08lX,%.3f,%lu,%lu.%03lu,%u,IMU,%d,%d,%d,%d,%d,%d\r\n",
-                         (uint32_t)(ts->local_clock.sec >> 32),
-                         (uint32_t)(ts->local_clock.sec & 0xFFFFFFFF),
-                         (double)ts->local_clock.ms,
+                         "%lu,%lu,%u,%s,IMU,%d,%d,%d,%d,%d,%d\r\n",
                          (unsigned long)week,
-                         (unsigned long)week_sec,
-                         (unsigned long)week_ms_rem,
+                         (unsigned long)week_ms,
                          ts->utc_valid ? 1U : 0U,
+                         mono_ms,
                          node->payload.imu.accel[0],
                          node->payload.imu.accel[1],
                          node->payload.imu.accel[2],
@@ -1034,44 +1191,103 @@ static size_t format_node_ascii(const AppDataNode *node,
                          node->payload.imu.gyro[2]);
             break;
 
-        case APP_DATA_SRC_UWB:
+        case APP_DATA_SRC_UWB_TWR:
             n = snprintf(line, line_size,
-                         "0x%02lX%08lX,%.3f,%lu,%lu.%03lu,%u,UWB,%u,%u,%u,%u,%u,%.17f,%u,%u,%u,%u,%u,%u,%u,%u,"
-                         "0x%02lX%08lX,0x%02lX%08lX,0x%02lX%08lX,0x%02lX%08lX\r\n",
-                         (uint32_t)(ts->local_clock.sec >> 32),
-                         (uint32_t)(ts->local_clock.sec & 0xFFFFFFFF),
-                         (double)ts->local_clock.ms,
+                         "%lu,%lu,%u,%s,UWB_TWR,0x%04X,0x%04X,%u,0x%04X,%.3f,%u,%u,%u,%u,%u,%u,%u\r\n",
                          (unsigned long)week,
-                         (unsigned long)week_sec,
-                         (unsigned long)week_ms_rem,
+                         (unsigned long)week_ms,
                          ts->utc_valid ? 1U : 0U,
-                         node->payload.uwb.anchor_id,
-                         node->payload.uwb.tag_id,
-                         node->payload.uwb.exchange_seq,
-                         node->payload.uwb.response_slot_id,
-                         node->payload.uwb.status_flags,
-                         node->payload.uwb.distance_m,
-                         node->payload.uwb.retry_count,
-                         node->payload.uwb.rx_pacc,
-                         node->payload.uwb.fp_index,
-                         node->payload.uwb.fp_ampl1,
-                         node->payload.uwb.fp_ampl2,
-                         node->payload.uwb.fp_ampl3,
-                         node->payload.uwb.std_noise,
-                         node->payload.uwb.max_noise,
-                         (uint32_t)(node->payload.uwb.tag_tx_ts >> 32),
-                         (uint32_t)(node->payload.uwb.tag_tx_ts & 0xFFFFFFFF),
-                         (uint32_t)(node->payload.uwb.anchor_rx_ts >> 32),
-                         (uint32_t)(node->payload.uwb.anchor_rx_ts & 0xFFFFFFFF),
-                         (uint32_t)(node->payload.uwb.anchor_tx_ts >> 32),
-                         (uint32_t)(node->payload.uwb.anchor_tx_ts & 0xFFFFFFFF),
-                         (uint32_t)(node->payload.uwb.tag_rx_ts >> 32),
-                         (uint32_t)(node->payload.uwb.tag_rx_ts & 0xFFFFFFFF));
+                         mono_ms,
+                         (unsigned)node->payload.uwb_twr.anchor_id,
+                         (unsigned)node->payload.uwb_twr.tag_id,
+                         (unsigned)node->payload.uwb_twr.exchange_seq,
+                         (unsigned)node->payload.uwb_twr.status_flags,
+                         node->payload.uwb_twr.distance_m,
+                         (unsigned)node->payload.uwb_twr.rx_pacc,
+                         (unsigned)node->payload.uwb_twr.fp_index,
+                         (unsigned)node->payload.uwb_twr.fp_ampl1,
+                         (unsigned)node->payload.uwb_twr.fp_ampl2,
+                         (unsigned)node->payload.uwb_twr.fp_ampl3,
+                         (unsigned)node->payload.uwb_twr.std_noise,
+                         (unsigned)node->payload.uwb_twr.max_noise);
             break;
 
         default:
             return 0;
     }
+
+    if (n <= 0 || (size_t)n >= line_size) {
+        return 0;
+    }
+
+    return bounded_strlen(line, line_size);
+}
+
+static size_t format_anchor_data_ascii(const AppDataNode *node,
+                                       const TimeTimestamp *ts,
+                                       uint8_t entry_index,
+                                       char *line,
+                                       size_t line_size)
+{
+    int n = 0;
+    char mono_ms[25];
+    const AppUwbAnchorDataSample *sample;
+    AppUwbAnchorEntry empty_entry  = {0};
+    const AppUwbAnchorEntry *entry = &empty_entry;
+
+    if (node == NULL || ts == NULL || line == NULL || line_size == 0U ||
+        node->source != APP_DATA_SRC_UWB_ANCHOR_DATA) {
+        return 0;
+    }
+
+    sample = &node->payload.uwb_anchor_data;
+    if (sample->entry_count > 0U) {
+        if (entry_index >= sample->entry_count ||
+            entry_index >= APP_UWB_ANCHOR_DATA_MAX_ENTRIES) {
+            return 0;
+        }
+        entry = &sample->entries[entry_index];
+    } else if (entry_index != 0U) {
+        return 0;
+    }
+
+    format_tick20k_ms(node->time_capture.local_tick_20k,
+                      mono_ms,
+                      sizeof(mono_ms));
+
+    uint32_t week    = ts->utc_valid ? ts->local_utc.week : 0U;
+    uint32_t week_ms = ts->utc_valid ? ts->local_utc.week_ms : 0U;
+
+    n = snprintf(line, line_size,
+                 "%lu,%lu,%u,%s,UWB_ANCHOR_DATA,0x%04X,%u,%u,%u,0x%04X,%u,%u,%u,%u,%u,%u,%u,%u,%u,%d,%d,%u,%u,0x%02X,0x%08lX,0x%04X,%u,%u,0x%04X\r\n",
+                 (unsigned long)week,
+                 (unsigned long)week_ms,
+                 ts->utc_valid ? 1U : 0U,
+                 mono_ms,
+                 (unsigned)sample->source_anchor_id,
+                 (unsigned)sample->table_seq,
+                 (unsigned)entry_index,
+                 (unsigned)sample->entry_count,
+                 (unsigned)entry->peer_anchor,
+                 (unsigned)entry->dist_cm,
+                 (unsigned)entry->dist_std_cm,
+                 (unsigned)entry->avg_pacc,
+                 (unsigned)entry->avg_fp_index,
+                 (unsigned)entry->avg_fp_ampl1,
+                 (unsigned)entry->avg_fp_ampl2,
+                 (unsigned)entry->avg_fp_ampl3,
+                 (unsigned)entry->avg_std_noise,
+                 (unsigned)entry->avg_max_noise,
+                 (int)entry->avg_rx_power_dbm_x100,
+                 (int)entry->avg_fp_power_dbm_x100,
+                 (unsigned)entry->samples,
+                 (unsigned)entry->quality,
+                 (unsigned)entry->flags,
+                 (unsigned long)entry->rx_error_flags,
+                 (unsigned)entry->lde_status,
+                 (unsigned)sample->total_len,
+                 (unsigned)sample->total_frags,
+                 (unsigned)sample->table_crc);
 
     if (n <= 0 || (size_t)n >= line_size) {
         return 0;
@@ -1091,7 +1307,7 @@ static void gnss_frame_handler(uint16_t msg_id,
                                uint16_t frame_len,
                                void *user)
 {
-    (void)user;
+    AppGnssFrameContext *ctx = (AppGnssFrameContext *)user;
 
     TimeUtcClock utc;
     if (GnssParser_ExtractUtc(frame, frame_len, &utc)) {
@@ -1107,7 +1323,11 @@ static void gnss_frame_handler(uint16_t msg_id,
 
     AppDataNode node = {0};
     node.source      = APP_DATA_SRC_GNSS;
-    (void)TimeService_CaptureNow(&node.time_capture);
+    if (ctx != NULL && ctx->time_valid) {
+        node.time_capture = ctx->time_capture;
+    } else {
+        (void)TimeService_CaptureNow(&node.time_capture);
+    }
     node.payload.gnss.lat         = nav.lat;
     node.payload.gnss.lon         = nav.lon;
     node.payload.gnss.hgt         = nav.hgt;
@@ -1140,8 +1360,19 @@ static int compare_local_tick(uint64_t a, uint64_t b)
 
 static int compare_node_time(const AppDataNode *a, const AppDataNode *b)
 {
-    return compare_local_tick(a->time_capture.local_tick_20k,
-                              b->time_capture.local_tick_20k);
+    int cmp = compare_local_tick(a->time_capture.local_tick_20k,
+                                 b->time_capture.local_tick_20k);
+    if (cmp != 0) {
+        return cmp;
+    }
+
+    if (a->enqueue_seq < b->enqueue_seq) {
+        return -1;
+    }
+    if (a->enqueue_seq > b->enqueue_seq) {
+        return 1;
+    }
+    return 0;
 }
 
 static void sorted_window_insert(AppDataNode *nodes,
@@ -1163,7 +1394,25 @@ static void sorted_window_insert(AppDataNode *nodes,
     (*count)++;
 }
 
-static void write_sorted_node_to_sd(const AppDataNode *node)
+static void write_data_ascii_outputs(const char *line,
+                                     size_t len,
+                                     AppDataSource source)
+{
+    if (line == NULL || len == 0U) {
+        return;
+    }
+
+    (void)usart_log_slot_write(APP_USART_LOG_SLOT_DATA,
+                               (const uint8_t *)line,
+                               len);
+
+    if (!sd_fifo_write_ascii((const uint8_t *)line, len, source)) {
+        app_log_sd_error("write ASCII to SD FIFO failed: source=%s",
+                         data_source_name(source));
+    }
+}
+
+static void write_sorted_node_to_outputs(const AppDataNode *node)
 {
     if (node == NULL) {
         return;
@@ -1177,17 +1426,30 @@ static void write_sorted_node_to_sd(const AppDataNode *node)
     }
 
     char line[APP_ASCII_LINE_SIZE];
-    size_t len = format_node_ascii(node, &ts, line, sizeof(line));
+    if (node->source == APP_DATA_SRC_UWB_ANCHOR_DATA) {
+        uint8_t entry_count = node->payload.uwb_anchor_data.entry_count;
+        uint8_t line_count  = entry_count == 0U ? 1U : entry_count;
+        if (line_count > APP_UWB_ANCHOR_DATA_MAX_ENTRIES) {
+            line_count = APP_UWB_ANCHOR_DATA_MAX_ENTRIES;
+        }
 
-    if (len == 0U) {
-        app_log_warn("format data node failed: source=%s",
-                     data_source_name(node->source));
-        return;
-    }
-
-    if (!sd_fifo_write_ascii((const uint8_t *)line, len, node->source)) {
-        app_log_sd_error("write ASCII to SD FIFO failed: source=%s",
+        for (uint8_t i = 0U; i < line_count; ++i) {
+            size_t len = format_anchor_data_ascii(node, &ts, i, line, sizeof(line));
+            if (len == 0U) {
+                app_log_warn("format data node failed: source=%s",
+                             data_source_name(node->source));
+                return;
+            }
+            write_data_ascii_outputs(line, len, node->source);
+        }
+    } else {
+        size_t len = format_node_ascii(node, &ts, line, sizeof(line));
+        if (len == 0U) {
+            app_log_warn("format data node failed: source=%s",
                          data_source_name(node->source));
+            return;
+        }
+        write_data_ascii_outputs(line, len, node->source);
     }
 }
 
@@ -1228,7 +1490,7 @@ bool AppTasks_CreateAll(AppMode mode)
     };
     const osThreadAttr_t sort_attr = {
         .name       = "dataSort",
-        .stack_size = 1024U * 4U,
+        .stack_size = 2048U * 4U,
         .priority   = osPriorityNormal,
     };
     const osThreadAttr_t sd_attr = {
@@ -1294,14 +1556,19 @@ void AppGnssTask(void *argument)
     (void)argument;
 
     g_gnss_task = xTaskGetCurrentTaskHandle();
-    GnssParser_Init(&g_gnss_parser, gnss_frame_handler, NULL);
+    GnssParser_Init(&g_gnss_parser, gnss_frame_handler, &g_gnss_frame_ctx);
     start_gnss_dma_idle();
 
     for (;;) {
         uint32_t dma_len = 0;
         if (xTaskNotifyWait(0, UINT32_MAX, &dma_len, portMAX_DELAY) == pdTRUE) {
             if (dma_len > 0U && dma_len <= APP_GNSS_RX_BUFFER_SIZE) {
+                g_gnss_frame_ctx.time_valid =
+                    take_cached_time_capture(&g_gnss_frame_ctx.time_capture,
+                                             &g_gnss_idle_time_capture,
+                                             &g_gnss_idle_time_valid);
                 GnssParser_ProcessBlock(&g_gnss_parser, g_gnss_rx_buffer, dma_len);
+                g_gnss_frame_ctx.time_valid = false;
             }
             memset(g_gnss_rx_buffer, 0, sizeof(g_gnss_rx_buffer));
             start_gnss_dma_idle();
@@ -1325,10 +1592,20 @@ void AppImuTask(void *argument)
     for (;;) {
         (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
+        TimeCapture irq_time_capture;
+        bool irq_time_valid =
+            take_cached_time_capture(&irq_time_capture,
+                                     &g_imu_irq_time_capture,
+                                     &g_imu_irq_time_valid);
+
         AppDataNode node = {0};
         node.source      = APP_DATA_SRC_IMU;
         if (ImuDevice_ReadRaw(&node.payload.imu) == 0) {
-            (void)TimeService_CaptureNow(&node.time_capture);
+            if (irq_time_valid) {
+                node.time_capture = irq_time_capture;
+            } else {
+                (void)TimeService_CaptureNow(&node.time_capture);
+            }
             if (!DataService_Send(&node, 0)) {
                 app_log_warn("IMU data queue full");
             }
@@ -1360,7 +1637,7 @@ void AppDataSortTask(void *argument)
             continue;
         }
 
-        write_sorted_node_to_sd(&window[0]);
+        write_sorted_node_to_outputs(&window[0]);
         if (count > 1U) {
             memmove(&window[0], &window[1], (count - 1U) * sizeof(window[0]));
         }
@@ -1373,10 +1650,14 @@ void AppSdWriterTask(void *argument)
     (void)argument;
 
     FIL file;
+#if APP_UWB_DEBUG_SD_LOG_ENABLED
     FIL uwb_log_file;
-    bool mounted        = false;
-    bool opened         = false;
+#endif
+    bool mounted = false;
+    bool opened  = false;
+#if APP_UWB_DEBUG_SD_LOG_ENABLED
     bool uwb_log_opened = false;
+#endif
 
     g_sd_writer_task = xTaskGetCurrentTaskHandle();
 
@@ -1397,21 +1678,28 @@ void AppSdWriterTask(void *argument)
             }
         }
 
-        /* UWB 日志文件: 独立打开 */
+#if APP_UWB_DEBUG_SD_LOG_ENABLED
+        /* UWB debug 日志文件: 独立打开 */
         if (!uwb_log_opened) {
             uwb_log_opened = StorageService_OpenNextUwbLog(&uwb_log_file);
             if (uwb_log_opened) {
                 g_uwb_sd_ready = true;
             }
         }
+#endif
 
-        /* 合并等待: 数据 FIFO 和 UWB 日志 FIFO 的通知位 */
-        uint32_t notify_bits = sd_fifo_ready_bits() | uwb_sd_fifo_ready_bits();
+        uint32_t notify_bits = sd_fifo_ready_bits();
+#if APP_UWB_DEBUG_SD_LOG_ENABLED
+        notify_bits |= uwb_sd_fifo_ready_bits();
+#endif
         if (notify_bits == 0U) {
+            uint32_t wait_mask = sd_ready_bit(APP_SD_BLOCK_MAIN) |
+                                 sd_ready_bit(APP_SD_BLOCK_BACKUP);
+#if APP_UWB_DEBUG_SD_LOG_ENABLED
+            wait_mask |= APP_UWB_SD_NOTIFY_MASK;
+#endif
             if (xTaskNotifyWait(0U,
-                                sd_ready_bit(APP_SD_BLOCK_MAIN) |
-                                    sd_ready_bit(APP_SD_BLOCK_BACKUP) |
-                                    APP_UWB_SD_NOTIFY_MASK,
+                                wait_mask,
                                 &notify_bits,
                                 portMAX_DELAY) != pdTRUE) {
                 continue;
@@ -1445,6 +1733,7 @@ void AppSdWriterTask(void *argument)
                 sd_fifo_unlock_block((AppSdBlockId)id);
             } else {
                 (void)f_sync(&file);
+                AppTasks_NotifySdWriteDone();
                 sd_fifo_release_block((AppSdBlockId)id);
             }
 
@@ -1453,7 +1742,8 @@ void AppSdWriterTask(void *argument)
             }
         }
 
-        /* ---- 处理 UWB 日志 FIFO ---- */
+#if APP_UWB_DEBUG_SD_LOG_ENABLED
+        /* ---- 处理 UWB debug 日志 FIFO ---- */
         if (uwb_log_opened) {
             for (uint32_t id = APP_SD_BLOCK_MAIN; id <= APP_SD_BLOCK_BACKUP; ++id) {
                 uint32_t uwb_bit = (id == APP_SD_BLOCK_MAIN) ? APP_UWB_SD_NOTIFY_MAIN : APP_UWB_SD_NOTIFY_BACKUP;
@@ -1481,6 +1771,7 @@ void AppSdWriterTask(void *argument)
                 }
             }
         }
+#endif
     }
 }
 
@@ -1503,12 +1794,12 @@ void AppKeyTask(void *argument)
                                       APP_KEY_LONG_PRESS_MS);
         switch (evt) {
             case BSP_KEY_EVENT_SHORT_PRESS:
-                type = APP_KEY_EVENT_SHORT_PRESS;
+                type    = APP_KEY_EVENT_SHORT_PRESS;
                 publish = true;
                 break;
 
             case BSP_KEY_EVENT_LONG_PRESS:
-                type = APP_KEY_EVENT_LONG_PRESS;
+                type    = APP_KEY_EVENT_LONG_PRESS;
                 publish = true;
                 break;
 
@@ -1520,7 +1811,7 @@ void AppKeyTask(void *argument)
             if (type == APP_KEY_EVENT_SHORT_PRESS &&
                 app_current_role() == APP_ROLE_ANCHOR) {
                 uint16_t self_addr = app_current_short_addr();
-                bool requested = UwbApp_RequestProxBuild();
+                bool requested     = UwbApp_RequestProxBuild();
 
                 char line[128];
                 int n = snprintf(line, sizeof(line),
@@ -1583,6 +1874,51 @@ static void app_led_apply_anchor_state(void)
     BspLed_Set(BSP_LED_2, g_anchor_led_notify_init);
 }
 
+static void app_led_sync_tag_normal_events(AppTagNormalLedCtx *ctx)
+{
+    if (ctx == NULL) {
+        return;
+    }
+
+    ctx->range_event_seen =
+        app_led_read_event_count(&g_tag_led_range_event_count);
+    ctx->sd_write_event_seen =
+        app_led_read_event_count(&g_tag_led_sd_write_event_count);
+}
+
+static void app_led_apply_tag_normal_state(AppTagNormalLedCtx *ctx,
+                                           uint32_t now)
+{
+    if (ctx == NULL) {
+        return;
+    }
+
+    uint32_t range_events =
+        app_led_read_event_count(&g_tag_led_range_event_count);
+    if (range_events != ctx->range_event_seen) {
+        ctx->range_event_seen = range_events;
+        ctx->range_led_on     = !ctx->range_led_on;
+    }
+
+    uint32_t sd_write_events =
+        app_led_read_event_count(&g_tag_led_sd_write_event_count);
+    if (sd_write_events != ctx->sd_write_event_seen) {
+        ctx->sd_write_event_seen  = sd_write_events;
+        ctx->sd_pulse_started_ms  = now;
+        ctx->sd_pulse_active      = true;
+    }
+
+    if (ctx->sd_pulse_active &&
+        (uint32_t)(now - ctx->sd_pulse_started_ms) >=
+            APP_LED_SD_WRITE_PULSE_MS) {
+        ctx->sd_pulse_active = false;
+    }
+
+    BspLed_Set(BSP_LED_0, ctx->sd_pulse_active);
+    BspLed_Set(BSP_LED_1, ctx->range_led_on);
+    BspLed_Set(BSP_LED_2, false);
+}
+
 static void app_led_enter_normal_state(AppLedState *state)
 {
     if (state != NULL) {
@@ -1600,6 +1936,7 @@ static void app_led_enter_loss_state(AppLedState *state)
     }
 
     app_led_loss_queue_reset();
+    app_led_set_loss_bar(0U);
 }
 
 static void app_led_handle_key_event(AppLedState *state,
@@ -1658,8 +1995,10 @@ void AppLedTask(void *argument)
 
     uint32_t index        = 0;
     uint32_t heartbeat_ms = HAL_GetTick();
-    AppLedState state     = (g_app_mode == APP_MODE_CONFIG) ?
-                            APP_LED_STATE_CONFIG : APP_LED_STATE_NORMAL;
+    AppLedState state     = (g_app_mode == APP_MODE_CONFIG) ? APP_LED_STATE_CONFIG : APP_LED_STATE_NORMAL;
+    AppTagNormalLedCtx tag_led_ctx;
+    memset(&tag_led_ctx, 0, sizeof(tag_led_ctx));
+    app_led_sync_tag_normal_events(&tag_led_ctx);
 
     for (;;) {
         AppKeyEventMsg event;
@@ -1668,7 +2007,10 @@ void AppLedTask(void *argument)
             app_led_handle_key_event(&state, &event);
         }
 
+        uint32_t now = HAL_GetTick();
+
         if (state == APP_LED_STATE_CONFIG) {
+            app_led_sync_tag_normal_events(&tag_led_ctx);
             BspLed_AllOff();
             BspLed_Set((BspLedId)(index % BSP_LED_COUNT), true);
             index++;
@@ -1682,13 +2024,14 @@ void AppLedTask(void *argument)
                    xQueueReceive(g_led_loss_cmd_queue, &cmd, 0) == pdPASS) {
                 app_led_apply_loss_cmd(&cmd);
             }
+            app_led_sync_tag_normal_events(&tag_led_ctx);
         } else if (app_current_role() == APP_ROLE_ANCHOR) {
             app_led_apply_anchor_state();
+            app_led_sync_tag_normal_events(&tag_led_ctx);
         } else {
-            app_led_set_loss_bar(0U);
+            app_led_apply_tag_normal_state(&tag_led_ctx, now);
         }
 
-        uint32_t now = HAL_GetTick();
         if ((uint32_t)(now - heartbeat_ms) >= 500U) {
             BspLed_Toggle(BSP_LED_3);
             heartbeat_ms = now;
@@ -1698,16 +2041,21 @@ void AppLedTask(void *argument)
     }
 }
 
-static size_t usart_cmd_fill_tx_dma_buffer(void)
+static size_t usart_cmd_fill_tx_dma_buffer(uint8_t *buffer,
+                                           size_t buffer_size)
 {
+    if (buffer == NULL || buffer_size == 0U) {
+        return 0U;
+    }
+
     for (uint32_t checked = 0; checked < APP_USART_LOG_SLOT_COUNT; ++checked) {
         AppUsartLogSlotId id =
             (AppUsartLogSlotId)((g_usart_log_next_slot + checked) %
                                 APP_USART_LOG_SLOT_COUNT);
 
         size_t len = usart_log_slot_read(id,
-                                         g_usart_cmd_tx_dma_buffer,
-                                         sizeof(g_usart_cmd_tx_dma_buffer));
+                                         buffer,
+                                         buffer_size);
         if (len > 0U) {
             g_usart_log_next_slot = ((uint32_t)id + 1U) %
                                     APP_USART_LOG_SLOT_COUNT;
@@ -1718,48 +2066,72 @@ static size_t usart_cmd_fill_tx_dma_buffer(void)
     return 0U;
 }
 
+static bool usart_cmd_prepare_tx_dma_buffer(void)
+{
+    if (g_usart_cmd_tx_dma_pending) {
+        return true;
+    }
+
+    uint8_t fill_index =
+        (uint8_t)((g_usart_cmd_tx_dma_active + 1U) %
+                  APP_USART_CMD_TX_DMA_BUFFER_COUNT);
+
+    size_t len = usart_cmd_fill_tx_dma_buffer(
+        g_usart_cmd_tx_dma_buffer[fill_index],
+        sizeof(g_usart_cmd_tx_dma_buffer[fill_index]));
+    if (len == 0U) {
+        return false;
+    }
+
+    g_usart_cmd_tx_dma_pending_index = fill_index;
+    g_usart_cmd_tx_dma_len           = (uint16_t)len;
+    g_usart_cmd_tx_dma_pending       = true;
+    return true;
+}
+
 static void usart_cmd_try_start_tx(void)
 {
 #if APP_USART_CMD_TX_USE_DMA
-    if (g_usart_cmd_tx_dma_busy) {
+    if (!g_usart_cmd_tx_dma_pending) {
+        (void)usart_cmd_prepare_tx_dma_buffer();
+    }
+
+    if (g_usart_cmd_tx_dma_busy || !g_usart_cmd_tx_dma_pending) {
         return;
     }
-#endif
 
-    if (!g_usart_cmd_tx_dma_pending) {
-        size_t len = usart_cmd_fill_tx_dma_buffer();
-        if (len == 0U) {
-            return;
-        }
+    uint8_t tx_index = g_usart_cmd_tx_dma_pending_index;
 
-        g_usart_cmd_tx_dma_len     = (uint16_t)len;
-        g_usart_cmd_tx_dma_pending = true;
-    }
-
-#if APP_USART_CMD_TX_USE_DMA
     HAL_StatusTypeDef status = HAL_UART_Transmit_DMA(&huart1,
-                                                     g_usart_cmd_tx_dma_buffer,
+                                                     g_usart_cmd_tx_dma_buffer[tx_index],
                                                      g_usart_cmd_tx_dma_len);
     g_usart_cmd_tx_status    = status;
     g_usart_cmd_tx_error     = huart1.ErrorCode;
     g_usart_cmd_tx_state     = huart1.gState;
 
     if (status == HAL_OK) {
+        g_usart_cmd_tx_dma_active  = tx_index;
         g_usart_cmd_tx_dma_busy    = true;
         g_usart_cmd_tx_dma_pending = false;
     } else if (status != HAL_BUSY) {
         (void)HAL_UART_AbortTransmit(&huart1);
     }
 #else
+    if (!g_usart_cmd_tx_dma_pending &&
+        !usart_cmd_prepare_tx_dma_buffer()) {
+        return;
+    }
+
+    uint8_t tx_index = g_usart_cmd_tx_dma_pending_index;
     HAL_StatusTypeDef status = HAL_UART_Transmit(&huart1,
-                                                 g_usart_cmd_tx_dma_buffer,
+                                                 g_usart_cmd_tx_dma_buffer[tx_index],
                                                  g_usart_cmd_tx_dma_len,
                                                  APP_USART_CMD_TX_TIMEOUT_MS);
     if (status == HAL_BUSY) {
         (void)HAL_UART_AbortTransmit(&huart1);
         osDelay(1U);
         status = HAL_UART_Transmit(&huart1,
-                                   g_usart_cmd_tx_dma_buffer,
+                                   g_usart_cmd_tx_dma_buffer[tx_index],
                                    g_usart_cmd_tx_dma_len,
                                    APP_USART_CMD_TX_TIMEOUT_MS);
     }
@@ -1767,6 +2139,7 @@ static void usart_cmd_try_start_tx(void)
     g_usart_cmd_tx_status      = status;
     g_usart_cmd_tx_error       = huart1.ErrorCode;
     g_usart_cmd_tx_state       = huart1.gState;
+    g_usart_cmd_tx_dma_active  = tx_index;
     g_usart_cmd_tx_dma_pending = false;
 #endif
 }
@@ -2118,6 +2491,12 @@ void AppTasks_NotifyImuIrqFromISR(void)
         return;
     }
 
+    TimeCapture capture;
+    if (TimeService_CaptureNow(&capture)) {
+        g_imu_irq_time_capture = capture;
+        g_imu_irq_time_valid   = true;
+    }
+
     BaseType_t higher = pdFALSE;
     vTaskNotifyGiveFromISR(g_imu_task, &higher);
     portYIELD_FROM_ISR(higher);
@@ -2229,6 +2608,12 @@ void GNSSIdleHandler(void)
     }
 
     __HAL_UART_CLEAR_IDLEFLAG(&huart3);
+
+    TimeCapture capture;
+    if (TimeService_CaptureNow(&capture)) {
+        g_gnss_idle_time_capture = capture;
+        g_gnss_idle_time_valid   = true;
+    }
 
     uint32_t remaining = 0;
     if (huart3.hdmarx != NULL) {

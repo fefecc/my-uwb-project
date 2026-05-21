@@ -50,6 +50,10 @@ typedef struct {
     uint64_t tag_rx_ts;
     uint64_t tag_tx_local_tick_20k;
     uint64_t tag_rx_local_tick_20k;
+    TimeCapture tag_tx_time_capture;
+    TimeCapture tag_rx_time_capture;
+    bool tag_tx_time_valid;
+    bool tag_rx_time_valid;
     UwbRxQuality quality;
     uint8_t retry_count;
 } UwbTwrExchange;
@@ -68,6 +72,8 @@ typedef struct {
     uint64_t anchor_tx_ts;
     uint64_t tag_rx_ts;
     uint64_t frame_local_tick_20k;
+    TimeCapture frame_time_capture;
+    bool frame_time_valid;
 } UwbRangeResult;
 
 /* ====== plan-v4 数据交互帧类型 ====== */

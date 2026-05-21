@@ -97,6 +97,55 @@ typedef struct {
 
 static phy_context_t g_phy;
 static TaskHandle_t g_phy_task;
+static TimeCapture g_phy_irq_time_capture;
+static volatile bool g_phy_irq_time_valid;
+static TimeCapture g_phy_event_time_capture;
+static bool g_phy_event_time_valid;
+
+static bool phy_take_irq_time_capture(TimeCapture *out)
+{
+    bool ok = false;
+
+    if (out == NULL) {
+        return false;
+    }
+
+    taskENTER_CRITICAL();
+    if (g_phy_irq_time_valid) {
+        *out = g_phy_irq_time_capture;
+        g_phy_irq_time_valid = false;
+        ok = true;
+    }
+    taskEXIT_CRITICAL();
+
+    return ok;
+}
+
+static void phy_set_event_time_capture(const TimeCapture *capture,
+                                       bool valid)
+{
+    if (capture != NULL && valid) {
+        g_phy_event_time_capture = *capture;
+        g_phy_event_time_valid   = true;
+    } else {
+        memset(&g_phy_event_time_capture, 0, sizeof(g_phy_event_time_capture));
+        g_phy_event_time_valid = false;
+    }
+}
+
+static bool phy_get_event_time_capture(TimeCapture *out)
+{
+    if (out == NULL) {
+        return false;
+    }
+
+    if (g_phy_event_time_valid) {
+        *out = g_phy_event_time_capture;
+        return true;
+    }
+
+    return TimeService_CaptureNow(out);
+}
 
 /* ================================================================
  *  DW1000 工具函数
@@ -478,7 +527,12 @@ static void irq_rx_ok(uint32_t status)
     dwt_readrxdata(s->data, frame_len, 0);
     s->data_len = frame_len;
     s->rx_ts    = UwbPhy_ReadRxTimestamp();
-    (void)TimeService_GetLocalTick20k(&s->rx_local_tick_20k);
+    if (phy_get_event_time_capture(&s->rx_time_capture)) {
+        s->rx_time_valid = true;
+        s->rx_local_tick_20k = s->rx_time_capture.local_tick_20k;
+    } else {
+        (void)TimeService_GetLocalTick20k(&s->rx_local_tick_20k);
+    }
     s->window_id = g_phy.window_id;
 
     /* RX 质量 */
@@ -753,6 +807,12 @@ static void handle_irq(void)
 {
     uint32_t st;
     int retry;
+    TimeCapture irq_time_capture;
+    bool irq_time_valid;
+
+    memset(&irq_time_capture, 0, sizeof(irq_time_capture));
+    irq_time_valid = phy_take_irq_time_capture(&irq_time_capture);
+    phy_set_event_time_capture(&irq_time_capture, irq_time_valid);
 
     for (retry = 0; retry < 3; retry++) {
         st = dwt_read32bitreg(SYS_STATUS_ID);
@@ -783,6 +843,7 @@ static void handle_irq(void)
         phy_evt_t evt = {.type = PHY_EVT_ERROR, .slot_index = -1};
         UwbBuffers_SendEvt(&evt, 0);
         enter_listening();
+        phy_set_event_time_capture(NULL, false);
         return;
     }
 
@@ -935,11 +996,13 @@ static void run_state_machine(void)
                 case UWB_PHY_STEP_FINISH: {
                     /* 快速应答完成: 只需读 TX 时间戳并 re-listen */
                     if (g_phy.fast_reply_active) {
-                        uint64_t tx_ts             = UwbPhy_ReadTxTimestamp();
-                        uint64_t tx_local_tick_20k = 0;
-                        int8_t sent_slot           = g_phy.tx_slot;
-                        const char *tag            = g_phy.fast_reply_is_data ? "data" : "disc";
-                        (void)TimeService_GetLocalTick20k(&tx_local_tick_20k);
+                        uint64_t tx_ts = UwbPhy_ReadTxTimestamp();
+                        TimeCapture tx_time_capture;
+                        bool tx_time_valid;
+                        int8_t sent_slot = g_phy.tx_slot;
+                        const char *tag  = g_phy.fast_reply_is_data ? "data" : "disc";
+                        memset(&tx_time_capture, 0, sizeof(tx_time_capture));
+                        tx_time_valid = phy_get_event_time_capture(&tx_time_capture);
                         app_log_info("[PHY] fast_reply[%s] tx=0x%02lX%08lX",
                                      tag,
                                      (uint32_t)(tx_ts >> 32),
@@ -947,8 +1010,16 @@ static void run_state_machine(void)
                         if (g_phy.fast_reply_is_data && sent_slot >= 0) {
                             uwb_slot_t *sent = UwbSlots_Get(sent_slot);
                             if (sent != NULL) {
-                                sent->tx_ts             = tx_ts;
-                                sent->tx_local_tick_20k = tx_local_tick_20k;
+                                sent->tx_ts = tx_ts;
+                                if (tx_time_valid) {
+                                    sent->tx_time_capture   = tx_time_capture;
+                                    sent->tx_time_valid     = true;
+                                    sent->tx_local_tick_20k =
+                                        tx_time_capture.local_tick_20k;
+                                } else {
+                                    (void)TimeService_GetLocalTick20k(
+                                        &sent->tx_local_tick_20k);
+                                }
                                 phy_evt_t evt           = {
                                               .type       = PHY_EVT_DATA_SENT,
                                               .slot_index = sent_slot,
@@ -966,13 +1037,23 @@ static void run_state_machine(void)
                     }
 
                     /* 填 TX 时间戳到 slot，PHY 不回收，交给 LINK 层管理生命周期 */
-                    uint64_t tx_ts             = UwbPhy_ReadTxTimestamp();
-                    uint64_t tx_local_tick_20k = 0;
-                    (void)TimeService_GetLocalTick20k(&tx_local_tick_20k);
+                    uint64_t tx_ts = UwbPhy_ReadTxTimestamp();
+                    TimeCapture tx_time_capture;
+                    bool tx_time_valid;
+                    memset(&tx_time_capture, 0, sizeof(tx_time_capture));
+                    tx_time_valid = phy_get_event_time_capture(&tx_time_capture);
                     uwb_slot_t *s = UwbSlots_Get(g_phy.tx_slot);
                     if (s != NULL) {
-                        s->tx_ts             = tx_ts;
-                        s->tx_local_tick_20k = tx_local_tick_20k;
+                        s->tx_ts = tx_ts;
+                        if (tx_time_valid) {
+                            s->tx_time_capture   = tx_time_capture;
+                            s->tx_time_valid     = true;
+                            s->tx_local_tick_20k =
+                                tx_time_capture.local_tick_20k;
+                        } else {
+                            (void)TimeService_GetLocalTick20k(
+                                &s->tx_local_tick_20k);
+                        }
                     }
 
                     int8_t tx_slot_idx = g_phy.tx_slot;
@@ -1107,6 +1188,11 @@ bool UwbPhy_Init(uint16_t pan_id, uint16_t short_addr)
 void UwbPhy_NotifyIrqFromISR(void)
 {
     if (g_phy_task == NULL) return;
+    TimeCapture capture;
+    if (TimeService_CaptureNow(&capture)) {
+        g_phy_irq_time_capture = capture;
+        g_phy_irq_time_valid   = true;
+    }
     BaseType_t higher = pdFALSE;
     xTaskNotifyFromISR(g_phy_task, PHY_NOTIFY_IRQ, eSetBits, &higher);
     portYIELD_FROM_ISR(higher);
@@ -1178,7 +1264,9 @@ void UwbPhy_Task(void *argument)
                     app_log_warn("[PHY] POLL_CATCH st=0x%08lX",
                                  (unsigned long)poll_st);
                 }
+                phy_set_event_time_capture(NULL, false);
                 dispatch_status(poll_st);
+                phy_set_event_time_capture(NULL, false);
                 run_state_machine();
                 continue;
             }
@@ -1231,5 +1319,6 @@ void UwbPhy_Task(void *argument)
 
         /* ---- 状态机步进 ---- */
         run_state_machine();
+        phy_set_event_time_capture(NULL, false);
     }
 }

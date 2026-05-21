@@ -792,11 +792,19 @@ static void handle_disc_rx_slot_done(const phy_evt_t *evt)
                 twr.tag_tx_ts = (tx_slot != NULL) ? tx_slot->tx_ts : 0;
                 twr.tag_tx_local_tick_20k =
                     (tx_slot != NULL) ? tx_slot->tx_local_tick_20k : 0;
+                if (tx_slot != NULL && tx_slot->tx_time_valid) {
+                    twr.tag_tx_time_capture = tx_slot->tx_time_capture;
+                    twr.tag_tx_time_valid   = true;
+                }
             }
             twr.anchor_rx_ts = anchor_rx_ts;
             twr.anchor_tx_ts = anchor_tx_ts;
             twr.tag_rx_ts    = s->rx_ts;
             twr.tag_rx_local_tick_20k = s->rx_local_tick_20k;
+            if (s->rx_time_valid) {
+                twr.tag_rx_time_capture = s->rx_time_capture;
+                twr.tag_rx_time_valid   = true;
+            }
             twr.quality      = s->quality;
 
             (void)UwbLossTest_PostRangeRx((uint8_t)frame.mac.seq,

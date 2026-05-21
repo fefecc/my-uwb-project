@@ -8,9 +8,11 @@
 #include "task.h"
 #include "../task/app_tasks.h"
 
-#define LOG_SERVICE_UWB_ONLY (1U)
+#define LOG_SERVICE_UWB_ONLY      (1U)
+#define LOG_SERVICE_USART_ENABLED (0U)
 #define LOG_SERVICE_SD_ENABLED  (0U)  /* 屏蔽 SD 卡写入, 防止影响 UWB 实时性 */
 
+#if LOG_SERVICE_USART_ENABLED || LOG_SERVICE_SD_ENABLED
 static bool is_uwb_task(void)
 {
     if (xTaskGetSchedulerState() == taskSCHEDULER_NOT_STARTED) {
@@ -53,6 +55,7 @@ static size_t bounded_strlen(const char *text, size_t max_len)
 
     return len;
 }
+#endif
 
 void LogService_Init(void)
 {
@@ -64,6 +67,12 @@ void LogService_VWrite(AppLogLevel level, const char *fmt, va_list args)
     if (fmt == NULL) {
         return;
     }
+
+#if !LOG_SERVICE_USART_ENABLED && !LOG_SERVICE_SD_ENABLED
+    (void)level;
+    (void)args;
+    return;
+#else
 
     char msg[192];
     char line[256];
@@ -84,11 +93,14 @@ void LogService_VWrite(AppLogLevel level, const char *fmt, va_list args)
         return;
     }
 
+#if LOG_SERVICE_USART_ENABLED
     (void)AppTasks_LogWriteText(line, bounded_strlen(line, sizeof(line)));
+#endif
 
     /* SD 卡日志写入 (非阻塞, 写入环形缓冲区) */
 #if LOG_SERVICE_SD_ENABLED
     (void)AppTasks_LogWriteSd(line, bounded_strlen(line, sizeof(line)));
+#endif
 #endif
 }
 
