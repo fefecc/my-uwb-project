@@ -36,9 +36,9 @@
 #define DATA_BUF_SIZE              512U
 #define DATA_WAIT_RETRY_MS         10U
 #define DATA_SESSION_TIMEOUT_MS    5000U
-#define DATA_SESSION_INTERVAL_MS   1000U
 #define DATA_META_PAYLOAD_LEN      6U
 #define DATA_FRAG_CRC_LEN          2U
+#define TAG_PULL_MAX_ANCHORS       TWR_MAX_ANCHORS
 
 #define PROX_ANCHOR_ID_MIN         (0x0020U)
 #define PROX_ANCHOR_ID_MAX         (0x0050U)
@@ -97,7 +97,6 @@ typedef struct {
     uint8_t  total_frags;
     uint8_t  next_frag;
     uint32_t session_started_ms;
-    uint32_t next_session_ms;
     uint32_t retry_at_ms;
     uint32_t cmd_count;
     uint32_t ack_count;
@@ -108,6 +107,14 @@ typedef struct {
     bool     completion_logged;
     UwbLinkCmd current_cmd;
 } tag_data_context_t;
+
+typedef struct {
+    bool     valid;
+    bool     started;
+    uint16_t anchor_id;
+    double   trigger_distance_m;
+    uint32_t trigger_ms;
+} tag_pull_record_t;
 
 typedef struct {
     bool     active;
@@ -157,13 +164,10 @@ static uint8_t  g_tx_buf[DATA_BUF_SIZE];
 static uint16_t g_tx_len;
 static uint8_t  g_rx_buf[DATA_BUF_SIZE];
 static uint16_t g_rx_len;
-static uint8_t  g_expected_buf[DATA_BUF_SIZE];
-static uint16_t g_expected_len;
 
-static uint16_t g_last_anchor_id;
-static uint32_t g_last_anchor_seen_ms;
 static uint16_t g_next_session_id = 1U;
 static tag_data_context_t g_tag_data;
+static tag_pull_record_t g_tag_pull_records[TAG_PULL_MAX_ANCHORS];
 static anchor_data_context_t g_anchor_data;
 static volatile prox_build_state_t g_prox_state;
 static volatile bool g_prox_request_pending;
@@ -182,15 +186,6 @@ static bool g_prox_ring_notify_pending;
 static uint16_t g_prox_ring_notify_target;
 static uint32_t g_prox_ring_notify_next_ms;
 static prox_peer_accum_t g_prox_peers[PROX_TABLE_MAX_ENTRIES];
-
-static const char *g_test_sentences[] = {
-    "Hello from Anchor! This is sentence one for testing.",
-    "UWB data transfer works. This is sentence two.",
-    "STM32H7 + DW1000. This is sentence three.",
-    "FreeRTOS RTOS running. This is sentence four.",
-    "Data link complete. This is sentence five.",
-};
-#define TEST_SENTENCE_COUNT  5
 
 /* ================================================================
  *  工具
@@ -248,74 +243,18 @@ static uint8_t calc_total_frags(uint16_t len)
                      UWB_DATA_FRAG_PAYLOAD_SIZE);
 }
 
-static bool append_payload_bytes(uint8_t *dst, uint16_t dst_size,
-                                 uint16_t *len,
-                                 const uint8_t *src, uint16_t src_len)
+static void prox_prepare_empty_tx_table(void)
 {
-    if (dst == NULL || len == NULL || src == NULL) return false;
-    if ((uint32_t)(*len) + src_len > dst_size) return false;
-
-    memcpy(&dst[*len], src, src_len);
-    *len = (uint16_t)(*len + src_len);
-    return true;
-}
-
-static uint16_t build_fake_payload(uint8_t *dst, uint16_t dst_size)
-{
-    uint16_t len = 0;
-    if (dst == NULL || dst_size == 0U) return 0;
-
-    for (int i = 0; i < TEST_SENTENCE_COUNT; i++) {
-        uint16_t slen = (uint16_t)strlen(g_test_sentences[i]);
-        if (!append_payload_bytes(dst, dst_size, &len,
-                                  (const uint8_t *)g_test_sentences[i],
-                                  slen)) {
-            break;
-        }
-
-        if (i < TEST_SENTENCE_COUNT - 1) {
-            uint8_t nl = (uint8_t)'\n';
-            if (!append_payload_bytes(dst, dst_size, &len, &nl, 1U)) {
-                break;
-            }
-        }
-    }
-
-    return len;
-}
-
-static bool find_first_diff(const uint8_t *a, const uint8_t *b,
-                            uint16_t len, uint16_t *index)
-{
-    if (a == NULL || b == NULL || index == NULL) return false;
-
-    for (uint16_t i = 0; i < len; i++) {
-        if (a[i] != b[i]) {
-            *index = i;
-            return true;
-        }
-    }
-    return false;
-}
-
-static void log_payload_lines(const char *prefix, const uint8_t *buf, uint16_t len)
-{
-    if (prefix == NULL || buf == NULL) return;
-
-    uint16_t off = 0;
-    while (off < len) {
-        uint16_t end = off;
-        while (end < len && buf[end] != '\n') end++;
-        uint16_t line_len = end - off;
-        if (line_len > 0U) {
-            char line[128];
-            uint16_t copy_len = min_u16(line_len, (uint16_t)(sizeof(line) - 1U));
-            memcpy(line, &buf[off], copy_len);
-            line[copy_len] = '\0';
-            app_log_info("[APP] %s %s", prefix, line);
-        }
-        off = (end < len) ? (uint16_t)(end + 1U) : end;
-    }
+    memset(g_tx_buf, 0, sizeof(g_tx_buf));
+    g_tx_buf[0] = PROX_TABLE_VERSION;
+    g_tx_buf[1] = 0U;
+    UwbProtocol_WriteLe16(&g_tx_buf[2], g_app_cfg.short_addr);
+    UwbProtocol_WriteLe16(&g_tx_buf[4], g_prox_init_seq);
+    UwbProtocol_WriteLe16(&g_tx_buf[6], 0U);
+    UwbProtocol_WriteLe16(&g_tx_buf[6],
+                          crc16_ccitt(g_tx_buf, PROX_TABLE_HEADER_LEN));
+    g_tx_len = PROX_TABLE_HEADER_LEN;
+    g_anchor_data.total_frags = calc_total_frags(g_tx_len);
 }
 
 static void log_twr_frame(const char *mode,
@@ -1191,6 +1130,83 @@ static void prox_accumulate_result(const UwbRangeResult *result)
     peer->last_seen_ms = HAL_GetTick();
 }
 
+static void tag_start_session(uint16_t target_id);
+
+static tag_pull_record_t *tag_find_pull_record(uint16_t anchor_id)
+{
+    for (uint32_t i = 0U; i < TAG_PULL_MAX_ANCHORS; ++i) {
+        if (g_tag_pull_records[i].valid &&
+            g_tag_pull_records[i].anchor_id == anchor_id) {
+            return &g_tag_pull_records[i];
+        }
+    }
+    return NULL;
+}
+
+static tag_pull_record_t *tag_alloc_pull_record(uint16_t anchor_id)
+{
+    for (uint32_t i = 0U; i < TAG_PULL_MAX_ANCHORS; ++i) {
+        if (!g_tag_pull_records[i].valid) {
+            memset(&g_tag_pull_records[i], 0, sizeof(g_tag_pull_records[i]));
+            g_tag_pull_records[i].valid = true;
+            g_tag_pull_records[i].anchor_id = anchor_id;
+            return &g_tag_pull_records[i];
+        }
+    }
+
+    app_log_warn("[APP] TAG_PULL_TABLE_FULL drop anchor=0x%04X max=%u",
+                 anchor_id,
+                 (unsigned)TAG_PULL_MAX_ANCHORS);
+    return NULL;
+}
+
+static tag_pull_record_t *tag_next_pending_pull_record(void)
+{
+    tag_pull_record_t *best = NULL;
+
+    for (uint32_t i = 0U; i < TAG_PULL_MAX_ANCHORS; ++i) {
+        if (!g_tag_pull_records[i].valid ||
+            g_tag_pull_records[i].started) {
+            continue;
+        }
+
+        if (best == NULL ||
+            g_tag_pull_records[i].trigger_ms < best->trigger_ms) {
+            best = &g_tag_pull_records[i];
+        }
+    }
+    return best;
+}
+
+static void tag_maybe_queue_data_pull(const UwbRangeResult *result)
+{
+    if (result == NULL ||
+        g_app_cfg.role != APP_ROLE_TAG ||
+        result->anchor_id == 0U) {
+        return;
+    }
+
+    if (tag_find_pull_record(result->anchor_id) != NULL) {
+        return;
+    }
+
+    tag_pull_record_t *rec = tag_alloc_pull_record(result->anchor_id);
+    if (rec == NULL) {
+        app_log_warn("[APP] TAG_PULL_QUEUE_FAIL anchor=0x%04X dist=%.2fm",
+                     result->anchor_id, result->distance_m);
+        return;
+    }
+
+    rec->trigger_distance_m = result->distance_m;
+    rec->trigger_ms = HAL_GetTick();
+    rec->started = false;
+
+    app_log_info("[APP] TAG_PULL_TRIGGER anchor=0x%04X dist=%.2fm action=%s",
+                 rec->anchor_id,
+                 rec->trigger_distance_m,
+                 g_tag_data.state == TAG_DATA_IDLE ? "start" : "queue");
+}
+
 static twr_anchor_record_t *find_anchor_record(uint16_t anchor_id)
 {
     for (int i = 0; i < TWR_MAX_ANCHORS; i++) {
@@ -1227,11 +1243,6 @@ static void twr_record_exchange(twr_anchor_record_t *rec,
 static void handle_twr_exchange(const UwbTwrExchange *exchange)
 {
     if (exchange == NULL) return;
-
-    if (g_app_cfg.role == APP_ROLE_TAG) {
-        g_last_anchor_id = exchange->anchor_id;
-        g_last_anchor_seen_ms = HAL_GetTick();
-    }
 
     if (exchange->tag_tx_ts == 0U) {
         app_log_warn("[APP] TWR_RX_INVALID anchor=0x%04X seq=%u slot=%u tag_tx=0",
@@ -1316,6 +1327,7 @@ static void handle_twr_exchange(const UwbTwrExchange *exchange)
             APP_UWB_STATUS_FLAG_TWR_DS_LONG;
 
         prox_accumulate_result(&result);
+        tag_maybe_queue_data_pull(&result);
         publish_range_result(&result);
         log_twr_frame(gap_class == TWR_GAP_SHORT ? "DS_SHORT" : "DS_LONG",
                       exchange, &result);
@@ -1475,33 +1487,110 @@ static void tag_log_session_complete(void)
     g_tag_data.completion_logged = true;
 }
 
-static bool tag_verify_fake_payload(void)
+static bool tag_verify_prox_table(void)
 {
     uint16_t got_crc = crc16_ccitt(g_rx_buf, g_rx_len);
-    uint16_t exp_crc = crc16_ccitt(g_expected_buf, g_expected_len);
+    uint16_t table_crc;
+    uint8_t entry_count;
+    uint16_t table_self;
+    uint16_t table_seq;
+    uint16_t table_len;
+    uint8_t crc_lo;
+    uint8_t crc_hi;
+    uint8_t log_count;
 
-    if (g_rx_len != g_expected_len ||
-        g_tag_data.total_len != g_expected_len ||
-        g_tag_data.total_crc != exp_crc ||
-        got_crc != exp_crc ||
-        memcmp(g_rx_buf, g_expected_buf, g_expected_len) != 0) {
-        uint16_t cmp_len = min_u16(g_rx_len, g_expected_len);
-        uint16_t diff = 0;
-        bool has_diff = find_first_diff(g_rx_buf, g_expected_buf,
-                                        cmp_len, &diff);
-
-        app_log_warn("[APP] DATA_VERIFY_FAIL rx_len=%u exp_len=%u rx_crc=0x%04X exp_crc=0x%04X meta_crc=0x%04X",
-                     g_rx_len, g_expected_len, got_crc, exp_crc,
+    if (g_rx_len < PROX_TABLE_HEADER_LEN ||
+        g_tag_data.total_len != g_rx_len ||
+        g_tag_data.total_crc != got_crc) {
+        app_log_warn("[APP] DATA_VERIFY_FAIL anchor=0x%04X len=%u/%u rx_crc=0x%04X meta_crc=0x%04X reason=meta",
+                     g_tag_data.target_id,
+                     g_rx_len,
+                     g_tag_data.total_len,
+                     got_crc,
                      g_tag_data.total_crc);
-        if (has_diff) {
-            app_log_warn("[APP] DATA_VERIFY_DIFF off=%u got=0x%02X exp=0x%02X",
-                         diff, g_rx_buf[diff], g_expected_buf[diff]);
-        }
         return false;
     }
 
-    app_log_info("[APP] DATA_VERIFY_OK len=%u frags=%u crc=0x%04X",
-                 g_rx_len, (unsigned)g_tag_data.total_frags, got_crc);
+    if (g_rx_buf[0] != PROX_TABLE_VERSION) {
+        app_log_warn("[APP] PROX_TABLE_INVALID anchor=0x%04X version=%u expect=%u",
+                     g_tag_data.target_id,
+                     (unsigned)g_rx_buf[0],
+                     (unsigned)PROX_TABLE_VERSION);
+        return false;
+    }
+
+    entry_count = g_rx_buf[1];
+    table_len = (uint16_t)(PROX_TABLE_HEADER_LEN +
+                           entry_count * PROX_TABLE_ENTRY_LEN);
+    if (table_len != g_rx_len) {
+        app_log_warn("[APP] PROX_TABLE_INVALID anchor=0x%04X entries=%u len=%u expect=%u",
+                     g_tag_data.target_id,
+                     (unsigned)entry_count,
+                     g_rx_len,
+                     table_len);
+        return false;
+    }
+
+    table_crc = UwbProtocol_ReadLe16(&g_rx_buf[6]);
+    crc_lo = g_rx_buf[6];
+    crc_hi = g_rx_buf[7];
+    g_rx_buf[6] = 0U;
+    g_rx_buf[7] = 0U;
+    got_crc = crc16_ccitt(g_rx_buf, g_rx_len);
+    g_rx_buf[6] = crc_lo;
+    g_rx_buf[7] = crc_hi;
+
+    if (got_crc != table_crc) {
+        app_log_warn("[APP] PROX_TABLE_CRC_FAIL anchor=0x%04X got=0x%04X expect=0x%04X",
+                     g_tag_data.target_id,
+                     got_crc,
+                     table_crc);
+        return false;
+    }
+
+    table_self = UwbProtocol_ReadLe16(&g_rx_buf[2]);
+    table_seq = UwbProtocol_ReadLe16(&g_rx_buf[4]);
+    app_log_info("[APP] DATA_VERIFY_OK anchor=0x%04X len=%u frags=%u crc=0x%04X",
+                 g_tag_data.target_id,
+                 g_rx_len,
+                 (unsigned)g_tag_data.total_frags,
+                 table_crc);
+    app_log_info("[APP] PROX_TABLE_RX anchor=0x%04X table_self=0x%04X seq=%u entries=%u len=%u",
+                 g_tag_data.target_id,
+                 table_self,
+                 (unsigned)table_seq,
+                 (unsigned)entry_count,
+                 g_rx_len);
+
+    log_count = entry_count > 4U ? 4U : entry_count;
+    for (uint8_t i = 0U; i < log_count; ++i) {
+        uint16_t off = (uint16_t)(PROX_TABLE_HEADER_LEN +
+                                  i * PROX_TABLE_ENTRY_LEN);
+        uint16_t self = UwbProtocol_ReadLe16(&g_rx_buf[off + 0U]);
+        uint16_t peer = UwbProtocol_ReadLe16(&g_rx_buf[off + 2U]);
+        uint16_t dist_cm = UwbProtocol_ReadLe16(&g_rx_buf[off + 4U]);
+        uint16_t std_cm = UwbProtocol_ReadLe16(&g_rx_buf[off + 6U]);
+        uint8_t samples = g_rx_buf[off + 26U];
+        uint8_t quality = g_rx_buf[off + 27U];
+        uint8_t flags = g_rx_buf[off + 28U];
+
+        app_log_info("[APP] PROX_ENTRY_RX anchor=0x%04X self=0x%04X peer=0x%04X dist=%ucm std=%ucm samples=%u quality=%u flags=0x%02X",
+                     g_tag_data.target_id,
+                     self,
+                     peer,
+                     (unsigned)dist_cm,
+                     (unsigned)std_cm,
+                     (unsigned)samples,
+                     (unsigned)quality,
+                     (unsigned)flags);
+    }
+
+    if (entry_count > log_count) {
+        app_log_info("[APP] PROX_ENTRY_RX anchor=0x%04X omitted=%u",
+                     g_tag_data.target_id,
+                     (unsigned)(entry_count - log_count));
+    }
+
     return true;
 }
 
@@ -1521,7 +1610,6 @@ static void handle_tag_ack(const UwbLinkAppEvent *evt)
         app_log_info("[APP] DATA_ACK DONE sess=0x%04X", g_tag_data.session_id);
         tag_log_data_stats("DATA_STATS");
         tag_log_session_complete();
-        g_tag_data.next_session_ms = HAL_GetTick() + DATA_SESSION_INTERVAL_MS;
         tag_reset_session();
     }
 }
@@ -1533,7 +1621,6 @@ static void handle_tag_data_fail(void)
         app_log_warn("[APP] DATA_DONE_ACK_FAIL anchor=0x%04X sess=0x%04X",
                      g_tag_data.target_id, g_tag_data.session_id);
         tag_log_data_stats("DATA_STATS");
-        g_tag_data.next_session_ms = HAL_GetTick() + DATA_SESSION_INTERVAL_MS;
         tag_reset_session();
         return;
     }
@@ -1542,7 +1629,6 @@ static void handle_tag_data_fail(void)
                  g_tag_data.target_id, g_tag_data.session_id);
     tag_log_data_stats("DATA_STATS_FAIL");
     tag_send_reset_cmd(g_tag_data.session_id);
-    g_tag_data.next_session_ms = HAL_GetTick() + DATA_SESSION_INTERVAL_MS;
     tag_reset_session();
 }
 
@@ -1664,7 +1750,7 @@ static void handle_tag_frag(const UwbDataFragEvent *evt)
         return;
     }
 
-    if (!tag_verify_fake_payload()) {
+    if (!tag_verify_prox_table()) {
         handle_tag_data_fail();
         return;
     }
@@ -1687,11 +1773,16 @@ static void tag_data_poll(void)
         return;
     }
 
-    if (g_tag_data.state == TAG_DATA_IDLE &&
-        g_last_anchor_id != 0U &&
-        now >= g_tag_data.next_session_ms &&
-        now - g_last_anchor_seen_ms < DATA_SESSION_TIMEOUT_MS) {
-        tag_start_session(g_last_anchor_id);
+    if (g_tag_data.state == TAG_DATA_IDLE) {
+        tag_pull_record_t *rec = tag_next_pending_pull_record();
+        if (rec != NULL) {
+            rec->started = true;
+            app_log_info("[APP] TAG_PULL_START anchor=0x%04X dist=%.2fm age=%lums",
+                         rec->anchor_id,
+                         rec->trigger_distance_m,
+                         (unsigned long)(now - rec->trigger_ms));
+            tag_start_session(rec->anchor_id);
+        }
     }
 
     tag_try_send_pending_cmd();
@@ -2046,16 +2137,12 @@ bool UwbApp_Init(const UwbStackConfig *cfg)
     memset(g_anchor_records, 0, sizeof(g_anchor_records));
     memset(g_tx_buf, 0, sizeof(g_tx_buf));
     memset(g_rx_buf, 0, sizeof(g_rx_buf));
-    memset(g_expected_buf, 0, sizeof(g_expected_buf));
     memset(&g_tag_data, 0, sizeof(g_tag_data));
+    memset(g_tag_pull_records, 0, sizeof(g_tag_pull_records));
     memset(&g_anchor_data, 0, sizeof(g_anchor_data));
     memset(g_prox_peers, 0, sizeof(g_prox_peers));
     g_tx_len = 0;
     g_rx_len = 0;
-    g_expected_len = build_fake_payload(g_expected_buf, sizeof(g_expected_buf));
-    g_last_anchor_id = 0;
-    g_last_anchor_seen_ms = 0;
-    g_tag_data.next_session_ms = DATA_SESSION_INTERVAL_MS;
     g_prox_state = PROX_BUILD_IDLE;
     g_prox_request_pending = false;
     g_prox_init_seq = 0U;
@@ -2074,9 +2161,7 @@ bool UwbApp_Init(const UwbStackConfig *cfg)
     g_prox_ring_notify_next_ms = 0U;
 
     if (cfg->role == APP_ROLE_ANCHOR) {
-        memcpy(g_tx_buf, g_expected_buf, g_expected_len);
-        g_tx_len = g_expected_len;
-        g_anchor_data.total_frags = calc_total_frags(g_tx_len);
+        prox_prepare_empty_tx_table();
     }
 
     return true;
@@ -2151,17 +2236,11 @@ void UwbApp_Task(void *argument)
     app_log_info("[APP] START short=0x%04X role=%u",
                  g_app_cfg.short_addr, (unsigned)g_app_cfg.role);
 
-    if (g_app_cfg.role == APP_ROLE_ANCHOR && g_tx_len > 0) {
-        app_log_info("[APP] DATA_FAKE_READY len=%u frags=%u crc=0x%04X",
+    if (g_app_cfg.role == APP_ROLE_ANCHOR) {
+        app_log_info("[APP] PROX_TABLE_BUFFER len=%u frags=%u ready=%u",
                      (unsigned)g_tx_len,
                      (unsigned)g_anchor_data.total_frags,
-                     crc16_ccitt(g_tx_buf, g_tx_len));
-        log_payload_lines(">", g_tx_buf, g_tx_len);
-    } else if (g_app_cfg.role == APP_ROLE_TAG && g_expected_len > 0) {
-        app_log_info("[APP] DATA_FAKE_EXPECT len=%u frags=%u crc=0x%04X",
-                     (unsigned)g_expected_len,
-                     (unsigned)calc_total_frags(g_expected_len),
-                     crc16_ccitt(g_expected_buf, g_expected_len));
+                     g_tx_len > 0U ? 1U : 0U);
     }
 
     for (;;) {

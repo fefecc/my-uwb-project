@@ -24,7 +24,10 @@
 
 /* LINK/PHY 调试日志会明显影响串口吞吐；默认只输出 START 和 WARN/ERROR。 */
 #undef app_log_info
-#define app_log_info(...) do { if (0) LogService_Write(APP_LOG_INFO, __VA_ARGS__); } while (0)
+#define app_log_info(...)                                   \
+    do {                                                    \
+        if (0) LogService_Write(APP_LOG_INFO, __VA_ARGS__); \
+    } while (0)
 
 /* ---- 状态/中断 清除掩码 ---- */
 #define PHY_STATUS_CLEAR_MASK                     \
@@ -65,7 +68,7 @@ typedef struct {
     uint8_t tx_buf[UWB_STACK_MAX_FRAME_LEN];
     uint16_t tx_buf_len;
     bool fast_reply_active;
-    bool fast_reply_is_data;   /* true=数据帧应答, false=DISC应答 */
+    bool fast_reply_is_data; /* true=数据帧应答, false=DISC应答 */
 
     /* RX slot 状态 */
     int8_t rx_slot;
@@ -85,11 +88,11 @@ typedef struct {
     UwbStackConfig stack_cfg;
 
     /* plan-v4 数据会话跟踪 (Anchor 侧) */
-    uint16_t data_session_id;      /* 从 CFG_REQ 提取, 0=无会话 */
-    uint8_t  data_expected_frag;   /* 期望的下一个 frag_id */
-    uint8_t  data_last_sent_frag;  /* 上一次已发送的 frag_id */
-    int8_t   data_pending_slot;    /* PHY 挂起表 slot, -1=空 */
-    bool     data_error_pending;   /* LINK 下发的错误标记 */
+    uint16_t data_session_id;    /* 从 CFG_REQ 提取, 0=无会话 */
+    uint8_t data_expected_frag;  /* 期望的下一个 frag_id */
+    uint8_t data_last_sent_frag; /* 上一次已发送的 frag_id */
+    int8_t data_pending_slot;    /* PHY 挂起表 slot, -1=空 */
+    bool data_error_pending;     /* LINK 下发的错误标记 */
 } phy_context_t;
 
 static phy_context_t g_phy;
@@ -170,7 +173,7 @@ static void finish_rx_window(void)
  * @return 帧长度, 0=失败
  */
 static uint16_t build_fast_reply_ack(uint16_t dst_short, uint8_t seq,
-                                      uint64_t rx_ts, uint64_t tx_ts)
+                                     uint64_t rx_ts, uint64_t tx_ts)
 {
     UwbProtocolFrame frame;
     UwbProtocol_InitFrame(&frame,
@@ -206,7 +209,7 @@ static uint16_t build_fast_reply_ack(uint16_t dst_short, uint8_t seq,
  * @return 帧长度, 0=失败
  */
 static uint16_t build_fast_reply_data_ack(uint16_t dst_short, uint8_t seq,
-                                           uint8_t resp_type, uint8_t extra)
+                                          uint8_t resp_type, uint8_t extra)
 {
     UwbProtocolFrame frame;
     UwbProtocol_InitFrame(&frame,
@@ -216,9 +219,9 @@ static uint16_t build_fast_reply_data_ack(uint16_t dst_short, uint8_t seq,
                           UWB_FUNC_APP_DATA_CTRL_RESP);
 
     frame.common.ext_header_len = 2U;
-    frame.ext_header[0] = resp_type;
-    frame.ext_header[1] = extra;
-    frame.common.payload_len = 0;
+    frame.ext_header[0]         = resp_type;
+    frame.ext_header[1]         = extra;
+    frame.common.payload_len    = 0;
 
     size_t tx_len = 0;
     if (!UwbProtocol_Encode(&frame, g_phy.tx_buf,
@@ -242,20 +245,20 @@ static bool send_delayed_reply(uint16_t len, uint64_t rx_ts, uint32_t delay_us)
         return false;
     }
 
-    g_phy.fast_reply_active = true;
+    g_phy.fast_reply_active  = true;
     g_phy.fast_reply_is_data = true;
-    g_phy.state = UWB_PHY_ST_TX;
-    g_phy.step  = UWB_PHY_STEP_WAIT;
-    g_phy.tx_slot = -1;
-    g_phy.pending_rx = false;
+    g_phy.state              = UWB_PHY_ST_TX;
+    g_phy.step               = UWB_PHY_STEP_WAIT;
+    g_phy.tx_slot            = -1;
+    g_phy.pending_rx         = false;
     return true;
 }
 
 static void build_and_send_wait_response(uint16_t dst16, uint8_t seq,
-                                          uint64_t rx_ts)
+                                         uint64_t rx_ts)
 {
     g_phy.tx_buf_len = build_fast_reply_data_ack(dst16, seq,
-                                                  UWB_DATA_RESP_WAIT, 0);
+                                                 UWB_DATA_RESP_WAIT, 0);
     if (g_phy.tx_buf_len > 0 &&
         send_delayed_reply(g_phy.tx_buf_len, rx_ts,
                            ANCHOR_REPLY_GUARD_US)) {
@@ -264,10 +267,10 @@ static void build_and_send_wait_response(uint16_t dst16, uint8_t seq,
 }
 
 static void build_and_send_error_response(uint16_t dst16, uint8_t seq,
-                                           uint64_t rx_ts)
+                                          uint64_t rx_ts)
 {
     g_phy.tx_buf_len = build_fast_reply_data_ack(dst16, seq,
-                                                  UWB_DATA_RESP_ERROR, 0);
+                                                 UWB_DATA_RESP_ERROR, 0);
     if (g_phy.tx_buf_len > 0 &&
         send_delayed_reply(g_phy.tx_buf_len, rx_ts,
                            ANCHOR_REPLY_GUARD_US)) {
@@ -288,20 +291,19 @@ static void send_pending_frag_as_reply(uint64_t rx_ts)
         return;
     }
 
-    uint64_t tx_time = (rx_ts + UwbPhy_UsToDwTime(ANCHOR_REPLY_GUARD_US))
-                       & ~((1ULL << 9) - 1ULL);
+    uint64_t tx_time = (rx_ts + UwbPhy_UsToDwTime(ANCHOR_REPLY_GUARD_US)) & ~((1ULL << 9) - 1ULL);
 
     dwt_writetxdata(s->data_len + 2U, s->data, 0);
     dwt_writetxfctrl(s->data_len + 2U, 0);
     dwt_setdelayedtrxtime((uint32_t)(tx_time >> 8));
 
     if (dwt_starttx(DWT_START_TX_DELAYED) == 0) {
-        g_phy.fast_reply_active = true;
-        g_phy.fast_reply_is_data = true;
-        g_phy.state = UWB_PHY_ST_TX;
-        g_phy.step  = UWB_PHY_STEP_WAIT;
-        g_phy.tx_slot = g_phy.data_pending_slot;
-        g_phy.pending_rx = false;
+        g_phy.fast_reply_active   = true;
+        g_phy.fast_reply_is_data  = true;
+        g_phy.state               = UWB_PHY_ST_TX;
+        g_phy.step                = UWB_PHY_STEP_WAIT;
+        g_phy.tx_slot             = g_phy.data_pending_slot;
+        g_phy.pending_rx          = false;
         g_phy.data_last_sent_frag = s->frag_id;
         app_log_info("[PHY] TX_STARTED fast_reply[data] frag=%u",
                      (unsigned)s->frag_id);
@@ -329,10 +331,10 @@ static void forward_data_ctrl_to_link(int8_t rx_slot_idx)
 
 static void clear_data_context(void)
 {
-    g_phy.data_session_id = 0;
-    g_phy.data_expected_frag = 0;
+    g_phy.data_session_id     = 0;
+    g_phy.data_expected_frag  = 0;
     g_phy.data_last_sent_frag = 0;
-    g_phy.data_error_pending = false;
+    g_phy.data_error_pending  = false;
 }
 
 /* ---- Anchor 处理 DATA_CTRL 帧 ---- */
@@ -353,10 +355,10 @@ static void phy_handle_data_frame(uwb_slot_t *s, int8_t rx_slot_idx)
     }
 
     uint16_t session_id = UwbProtocol_ReadLe16(&frame.ext_header[0]);
-    uint8_t  ctrl_type  = frame.ext_header[2];
-    uint8_t  frag_id    = (frame.common.ext_header_len >= 4) ? frame.ext_header[3] : 0;
+    uint8_t ctrl_type   = frame.ext_header[2];
+    uint8_t frag_id     = (frame.common.ext_header_len >= 4) ? frame.ext_header[3] : 0;
     uint16_t src16      = frame.mac.src16;
-    uint8_t  seq        = frame.mac.seq;
+    uint8_t seq         = frame.mac.seq;
 
     /* 错误标记检查 */
     if (g_phy.data_error_pending) {
@@ -372,8 +374,8 @@ static void phy_handle_data_frame(uwb_slot_t *s, int8_t rx_slot_idx)
     if (ctrl_type == UWB_DATA_CTRL_DONE || ctrl_type == UWB_DATA_CTRL_STOP) {
         app_log_info("[PHY] DATA_CTRL_DONE src=0x%04X sess=0x%04X ctrl=%u",
                      src16, session_id, (unsigned)ctrl_type);
-        g_phy.data_session_id    = 0;
-        g_phy.data_expected_frag = 0;
+        g_phy.data_session_id     = 0;
+        g_phy.data_expected_frag  = 0;
         g_phy.data_last_sent_frag = 0;
         if (g_phy.data_pending_slot >= 0) {
             UwbSlots_Free(g_phy.data_pending_slot);
@@ -381,7 +383,7 @@ static void phy_handle_data_frame(uwb_slot_t *s, int8_t rx_slot_idx)
         }
         /* 发 ACK 确认 */
         g_phy.tx_buf_len = build_fast_reply_data_ack(src16, seq,
-                                                      UWB_DATA_RESP_ACK, 0);
+                                                     UWB_DATA_RESP_ACK, 0);
         if (g_phy.tx_buf_len > 0 &&
             send_delayed_reply(g_phy.tx_buf_len, s->rx_ts,
                                ANCHOR_REPLY_GUARD_US)) {
@@ -474,8 +476,8 @@ static void irq_rx_ok(uint32_t status)
     if (frame_len > UWB_SLOT_DATA_SIZE) frame_len = UWB_SLOT_DATA_SIZE;
 
     dwt_readrxdata(s->data, frame_len, 0);
-    s->data_len  = frame_len;
-    s->rx_ts     = UwbPhy_ReadRxTimestamp();
+    s->data_len = frame_len;
+    s->rx_ts    = UwbPhy_ReadRxTimestamp();
     (void)TimeService_GetLocalTick20k(&s->rx_local_tick_20k);
     s->window_id = g_phy.window_id;
 
@@ -487,11 +489,11 @@ static void irq_rx_ok(uint32_t status)
         memset(&s->quality, 0, sizeof(s->quality));
         dwt_readdiagnostics(&diag);
 
-        s->quality.rx_pacc = diag.rxPreamCount;
-        s->quality.fp_index = diag.firstPath;
-        s->quality.fp_ampl1 = diag.firstPathAmp1;
-        s->quality.fp_ampl2 = diag.firstPathAmp2;
-        s->quality.fp_ampl3 = diag.firstPathAmp3;
+        s->quality.rx_pacc   = diag.rxPreamCount;
+        s->quality.fp_index  = diag.firstPath;
+        s->quality.fp_ampl1  = diag.firstPathAmp1;
+        s->quality.fp_ampl2  = diag.firstPathAmp2;
+        s->quality.fp_ampl3  = diag.firstPathAmp3;
         s->quality.std_noise = diag.stdNoise;
         s->quality.max_noise = diag.maxNoise;
 
@@ -538,7 +540,7 @@ static void irq_rx_ok(uint32_t status)
 
         /* ★ 再构建帧 (携带 rx_ts 和 tx_time) */
         g_phy.tx_buf_len = build_fast_reply_ack(frame.mac.src16, frame.mac.seq,
-                                                 rx_ts, tx_time);
+                                                rx_ts, tx_time);
         if (g_phy.tx_buf_len > 0) {
             dwt_writetxdata(g_phy.tx_buf_len + 2U, g_phy.tx_buf, 0);
             dwt_writetxfctrl(g_phy.tx_buf_len + 2U, 0);
@@ -547,7 +549,7 @@ static void irq_rx_ok(uint32_t status)
             int ret = dwt_starttx(DWT_START_TX_DELAYED);
 
             if (ret == 0) {
-                g_phy.fast_reply_active = true;
+                g_phy.fast_reply_active  = true;
                 g_phy.fast_reply_is_data = false;
                 app_log_info("[PHY] TX_STARTED fast_reply[disc] slot=%u ",
                              (unsigned)assigned_slot);
@@ -604,8 +606,8 @@ static void irq_rx_ok(uint32_t status)
                 }
 
                 /* 新会话 */
-                g_phy.data_session_id    = new_session;
-                g_phy.data_expected_frag = 1;
+                g_phy.data_session_id     = new_session;
+                g_phy.data_expected_frag  = 1;
                 g_phy.data_last_sent_frag = 0;
 
                 g_phy.tx_buf_len = build_fast_reply_data_ack(
@@ -632,7 +634,7 @@ static void irq_rx_ok(uint32_t status)
         if (g_phy.role == APP_ROLE_ANCHOR &&
             frame.common.func_code == (uint8_t)UWB_FUNC_APP_DATA_CTRL) {
 
-            int8_t rslot = g_phy.rx_slot;
+            int8_t rslot       = g_phy.rx_slot;
             g_phy.rx_slot      = -1;
             g_phy.rx_got_frame = false;
             phy_handle_data_frame(s, rslot);
@@ -671,9 +673,9 @@ static void irq_rx_error(uint32_t status)
     g_phy.rx_got_frame = false;
 
     /* IDLE 状态下: 环境噪声触发的 RX 错误是正常现象,
-     * 每 50 次才记录一条日志, 避免刷屏 */
+     * 每 100 次才记录一条日志, 避免刷屏 */
     if (g_phy.state == UWB_PHY_ST_IDLE) {
-        if (g_phy.rx_err_cnt <= 1 || (g_phy.rx_err_cnt % 50) == 0) {
+        if (g_phy.rx_err_cnt <= 1 || (g_phy.rx_err_cnt % 100) == 0) {
             app_log_warn("[PHY] RX_ERR(idle) st=0x%08lX cnt=%lu",
                          (unsigned long)status,
                          (unsigned long)g_phy.rx_err_cnt);
@@ -933,10 +935,10 @@ static void run_state_machine(void)
                 case UWB_PHY_STEP_FINISH: {
                     /* 快速应答完成: 只需读 TX 时间戳并 re-listen */
                     if (g_phy.fast_reply_active) {
-                        uint64_t tx_ts = UwbPhy_ReadTxTimestamp();
+                        uint64_t tx_ts             = UwbPhy_ReadTxTimestamp();
                         uint64_t tx_local_tick_20k = 0;
-                        int8_t sent_slot = g_phy.tx_slot;
-                        const char *tag = g_phy.fast_reply_is_data ? "data" : "disc";
+                        int8_t sent_slot           = g_phy.tx_slot;
+                        const char *tag            = g_phy.fast_reply_is_data ? "data" : "disc";
                         (void)TimeService_GetLocalTick20k(&tx_local_tick_20k);
                         app_log_info("[PHY] fast_reply[%s] tx=0x%02lX%08lX",
                                      tag,
@@ -945,36 +947,36 @@ static void run_state_machine(void)
                         if (g_phy.fast_reply_is_data && sent_slot >= 0) {
                             uwb_slot_t *sent = UwbSlots_Get(sent_slot);
                             if (sent != NULL) {
-                                sent->tx_ts = tx_ts;
+                                sent->tx_ts             = tx_ts;
                                 sent->tx_local_tick_20k = tx_local_tick_20k;
-                                phy_evt_t evt = {
-                                    .type = PHY_EVT_DATA_SENT,
-                                    .slot_index = sent_slot,
-                                    .frag_id = sent->frag_id,
-                                    .tx_ts = tx_ts,
+                                phy_evt_t evt           = {
+                                              .type       = PHY_EVT_DATA_SENT,
+                                              .slot_index = sent_slot,
+                                              .frag_id    = sent->frag_id,
+                                              .tx_ts      = tx_ts,
                                 };
                                 (void)UwbBuffers_SendEvt(&evt, 0);
                             }
                         }
-                        g_phy.fast_reply_active = false;
+                        g_phy.fast_reply_active  = false;
                         g_phy.fast_reply_is_data = false;
-                        g_phy.tx_slot           = -1;
+                        g_phy.tx_slot            = -1;
                         enter_listening();
                         break;
                     }
 
                     /* 填 TX 时间戳到 slot，PHY 不回收，交给 LINK 层管理生命周期 */
-                    uint64_t tx_ts = UwbPhy_ReadTxTimestamp();
+                    uint64_t tx_ts             = UwbPhy_ReadTxTimestamp();
                     uint64_t tx_local_tick_20k = 0;
                     (void)TimeService_GetLocalTick20k(&tx_local_tick_20k);
                     uwb_slot_t *s = UwbSlots_Get(g_phy.tx_slot);
                     if (s != NULL) {
-                        s->tx_ts = tx_ts;
+                        s->tx_ts             = tx_ts;
                         s->tx_local_tick_20k = tx_local_tick_20k;
                     }
 
                     int8_t tx_slot_idx = g_phy.tx_slot;
-                    g_phy.tx_slot = -1;
+                    g_phy.tx_slot      = -1;
 
                     /* 上报 TX_DONE, 携带 slot_index 供 LINK 读取 tx_ts */
                     phy_evt_t evt = {.type = PHY_EVT_TX_DONE, .slot_index = tx_slot_idx, .tx_ts = tx_ts};
@@ -1083,14 +1085,14 @@ bool UwbPhy_InitWithConfig(uint16_t pan_id, uint16_t short_addr,
                            const UwbStackConfig *stack_cfg)
 {
     memset(&g_phy, 0, sizeof(g_phy));
-    g_phy.pan_id     = pan_id;
-    g_phy.short_addr = short_addr;
-    g_phy.role       = role;
-    g_phy.tx_slot    = -1;
-    g_phy.rx_slot    = -1;
+    g_phy.pan_id            = pan_id;
+    g_phy.short_addr        = short_addr;
+    g_phy.role              = role;
+    g_phy.tx_slot           = -1;
+    g_phy.rx_slot           = -1;
     g_phy.data_pending_slot = -1;
-    g_phy.state      = UWB_PHY_ST_IDLE;
-    g_phy.step       = UWB_PHY_STEP_PREPARE;
+    g_phy.state             = UWB_PHY_ST_IDLE;
+    g_phy.step              = UWB_PHY_STEP_PREPARE;
     if (stack_cfg != NULL) {
         g_phy.stack_cfg = *stack_cfg;
     }
