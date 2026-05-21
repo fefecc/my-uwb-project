@@ -39,6 +39,7 @@
 #define DATA_META_PAYLOAD_LEN      6U
 #define DATA_FRAG_CRC_LEN          2U
 #define TAG_PULL_MAX_ANCHORS       TWR_MAX_ANCHORS
+#define TAG_PULL_TRIGGER_DIST_M    (50.0)
 
 #define PROX_ANCHOR_ID_MIN         (0x0020U)
 #define PROX_ANCHOR_ID_MAX         (0x0050U)
@@ -1182,7 +1183,9 @@ static void tag_maybe_queue_data_pull(const UwbRangeResult *result)
 {
     if (result == NULL ||
         g_app_cfg.role != APP_ROLE_TAG ||
-        result->anchor_id == 0U) {
+        result->anchor_id == 0U ||
+        result->distance_m <= 0.0 ||
+        result->distance_m > TAG_PULL_TRIGGER_DIST_M) {
         return;
     }
 
@@ -1201,9 +1204,10 @@ static void tag_maybe_queue_data_pull(const UwbRangeResult *result)
     rec->trigger_ms = HAL_GetTick();
     rec->started = false;
 
-    app_log_info("[APP] TAG_PULL_TRIGGER anchor=0x%04X dist=%.2fm action=%s",
+    app_log_info("[APP] TAG_PULL_TRIGGER anchor=0x%04X dist=%.2fm threshold=%.2fm action=%s",
                  rec->anchor_id,
                  rec->trigger_distance_m,
+                 TAG_PULL_TRIGGER_DIST_M,
                  g_tag_data.state == TAG_DATA_IDLE ? "start" : "queue");
 }
 
