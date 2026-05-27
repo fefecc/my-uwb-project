@@ -9,7 +9,7 @@
 #include "../task/app_tasks.h"
 
 #define LOG_SERVICE_UWB_ONLY      (1U)
-#define LOG_SERVICE_USART_ENABLED (1U)
+#define LOG_SERVICE_USART_ENABLED (0U)
 #define LOG_SERVICE_SD_ENABLED  (0U)  /* 屏蔽 SD 卡写入, 防止影响 UWB 实时性 */
 
 #if LOG_SERVICE_USART_ENABLED || LOG_SERVICE_SD_ENABLED

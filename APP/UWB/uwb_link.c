@@ -764,41 +764,8 @@ static void disc_sm_on_error(link_error_t err)
  *  PHY 事件解析
  * ================================================================ */
 
-static void log_disc_rx_slot_report(const phy_evt_t *evt)
-{
-    if (evt == NULL) return;
-
-    if (evt->slot_index < 0) {
-        LogService_Write(APP_LOG_INFO,
-                         "[LINK] DISC_SLOT seq=%u data=0",
-                         (unsigned)evt->rx_seq);
-        return;
-    }
-
-    uwb_slot_t *s = UwbSlots_Get(evt->slot_index);
-    if (s == NULL) {
-        LogService_Write(APP_LOG_WARN,
-                         "[LINK] DISC_SLOT seq=%u data=1 slot=%d null",
-                         (unsigned)evt->rx_seq,
-                         (int)evt->slot_index);
-        return;
-    }
-
-    LogService_Write(APP_LOG_INFO,
-                     "[LINK] DISC_SLOT seq=%u data=1 slot=%d src=0x%04X type=0x%02X len=%u rx=0x%02lX%08lX",
-                     (unsigned)evt->rx_seq,
-                     (int)evt->slot_index,
-                     s->src_short,
-                     (unsigned)s->frame_type,
-                     (unsigned)s->data_len,
-                     (uint32_t)(s->rx_ts >> 32),
-                     (uint32_t)(s->rx_ts & 0xFFFFFFFF));
-}
-
 static void handle_disc_rx_slot_done(const phy_evt_t *evt)
 {
-    log_disc_rx_slot_report(evt);
-
     if (evt->rx_seq < DISC_RX_SLOT_COUNT) {
         g_link.rx_slot_results[evt->rx_seq] = evt->slot_index;
     }
@@ -1111,14 +1078,6 @@ static void link_dispatch_phy_evt(const phy_evt_t *evt)
                      (int)g_link.rx_slot_results[1],
                      (int)g_link.rx_slot_results[2],
                      (int)g_link.rx_slot_results[3]);
-        LogService_Write(APP_LOG_INFO,
-                         "[LINK] DISC_WIN ok=%u/%u r=[%d,%d,%d,%d]",
-                         (unsigned)evt->rx_seq,
-                         (unsigned)DISC_RX_SLOT_COUNT,
-                         (int)g_link.rx_slot_results[0],
-                         (int)g_link.rx_slot_results[1],
-                         (int)g_link.rx_slot_results[2],
-                         (int)g_link.rx_slot_results[3]);
         memset(g_link.rx_slot_results, -1, sizeof(g_link.rx_slot_results));
         if (g_link.tx_slot_idx >= 0) {
             UwbSlots_Free(g_link.tx_slot_idx);
