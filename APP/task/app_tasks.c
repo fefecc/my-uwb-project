@@ -433,7 +433,9 @@ static bool usart_log_slot_wait_for_space(AppUsartLogSlot *slot,
 static bool usart_log_slot_output_enabled(AppUsartLogSlotId id)
 {
 #if APP_USART_RUN_DATA_ONLY
-    if (g_app_mode != APP_MODE_CONFIG && id != APP_USART_LOG_SLOT_DATA) {
+    if (g_app_mode != APP_MODE_CONFIG &&
+        id != APP_USART_LOG_SLOT_DATA &&
+        id != APP_USART_LOG_SLOT_CMD) {
         return false;
     }
 #else
@@ -2211,7 +2213,12 @@ static HAL_StatusTypeDef send_text(const char *text)
 
 static void send_cmd_help(void)
 {
-    send_text("cmd: read | set <pan_hex> <short_hex> <role> | set pan|short|role|log <value> | save | help\r\n");
+    send_text("cmd: reboot | read | set <pan_hex> <short_hex> <role> | set pan|short|role|log <value> | save | help\r\n");
+}
+
+static void send_run_cmd_help(void)
+{
+    send_text("cmd: reboot | help\r\n");
 }
 
 static void usart_cmd_load_config(void)
@@ -2370,6 +2377,14 @@ static bool handle_config_line(char *line)
         return true;
     }
 
+    if (command_equals(line, "reboot")) {
+        send_text("OK reboot\r\n");
+        usart_cmd_try_start_tx();
+        osDelay(20U);
+        NVIC_SystemReset();
+        return true;
+    }
+
     if (command_equals(line, "read")) {
         print_config();
         send_text("OK read\r\n");
@@ -2403,6 +2418,60 @@ static bool handle_config_line(char *line)
     send_text("ERR unknown cmd\r\n");
     send_cmd_help();
     return true;
+}
+
+static bool handle_run_line(char *line)
+{
+    line = trim_ascii_space(line);
+    if (*line == '\0') {
+        return true;
+    }
+
+    if (command_equals(line, "help")) {
+        send_run_cmd_help();
+        send_text("OK help\r\n");
+        return true;
+    }
+
+    if (command_equals(line, "reboot")) {
+        send_text("OK reboot\r\n");
+        usart_cmd_try_start_tx();
+        osDelay(20U);
+        NVIC_SystemReset();
+        return true;
+    }
+
+    send_text("ERR unknown cmd\r\n");
+    send_run_cmd_help();
+    return true;
+}
+
+static bool handle_current_usart_cmd_line(void)
+{
+    g_usart_cmd_line[g_usart_cmd_line_len] = '\0';
+
+    {
+        char line[160];
+        int n = snprintf(line, sizeof(line),
+                         "RX cmd: %s\r\n",
+                         g_usart_cmd_line);
+        if (n > 0) {
+            send_text(line);
+        }
+    }
+
+    bool ok = (g_app_mode == APP_MODE_CONFIG) ?
+              handle_config_line(g_usart_cmd_line) :
+              handle_run_line(g_usart_cmd_line);
+    g_usart_cmd_line_len = 0U;
+    memset(g_usart_cmd_line, 0, sizeof(g_usart_cmd_line));
+    return ok;
+}
+
+static bool current_usart_cmd_is_reboot(void)
+{
+    return g_usart_cmd_line_len == 6U &&
+           memcmp(g_usart_cmd_line, "reboot", 6U) == 0;
 }
 
 static bool start_usart_cmd_dma_idle(void)
@@ -2442,14 +2511,9 @@ static bool process_usart_cmd_frame(const uint8_t *data, uint32_t len)
 
         if (ch == '\r' || ch == '\n') {
             if (g_usart_cmd_line_len > 0U) {
-                g_usart_cmd_line[g_usart_cmd_line_len] = '\0';
-                if (!handle_config_line(g_usart_cmd_line)) {
-                    g_usart_cmd_line_len = 0U;
-                    memset(g_usart_cmd_line, 0, sizeof(g_usart_cmd_line));
+                if (!handle_current_usart_cmd_line()) {
                     return false;
                 }
-                g_usart_cmd_line_len = 0U;
-                memset(g_usart_cmd_line, 0, sizeof(g_usart_cmd_line));
             }
             continue;
         }
@@ -2464,6 +2528,14 @@ static bool process_usart_cmd_frame(const uint8_t *data, uint32_t len)
         g_usart_cmd_line[g_usart_cmd_line_len++] = ch;
     }
 
+    if (current_usart_cmd_is_reboot()) {
+        return handle_current_usart_cmd_line();
+    }
+
+    if (g_app_mode != APP_MODE_CONFIG && g_usart_cmd_line_len > 0U) {
+        return handle_current_usart_cmd_line();
+    }
+
     return true;
 }
 
@@ -2474,15 +2546,16 @@ void AppUsartCmdTask(void *argument)
     g_usart_cmd_task = xTaskGetCurrentTaskHandle();
     usart_cmd_load_config();
 
-    bool rx_enabled = g_app_mode == APP_MODE_CONFIG;
-    if (rx_enabled) {
+    if (g_app_mode == APP_MODE_CONFIG) {
         send_text("config mode\r\n");
         send_cmd_help();
-        while (!start_usart_cmd_dma_idle()) {
-            osDelay(10U);
-        }
     } else {
         send_text("run mode\r\n");
+        send_run_cmd_help();
+    }
+
+    while (!start_usart_cmd_dma_idle()) {
+        osDelay(10U);
     }
 
     for (;;) {
@@ -2498,10 +2571,6 @@ void AppUsartCmdTask(void *argument)
 
         if ((notify & APP_USART_CMD_NOTIFY_TX_DONE) != 0U) {
             g_usart_cmd_tx_dma_busy = false;
-        }
-
-        if (!rx_enabled) {
-            continue;
         }
 
         bool restart_rx = false;
