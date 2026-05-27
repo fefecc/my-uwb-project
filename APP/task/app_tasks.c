@@ -47,7 +47,8 @@
 #define APP_LED_LOSS_CMD_QUEUE_LEN       (4U)
 #define APP_KEY_EVENT_QUEUE_LEN          (4U)
 #define APP_LED_SD_WRITE_PULSE_MS        (80U)
-#define APP_USART_RUN_DATA_ONLY          (1U)
+#define APP_USART_RUN_DATA_ONLY          (0U)
+#define APP_SUPPRESS_DATA_ASCII_OUTPUT   (1U)
 
 #if APP_SUPPRESS_SD_WRITE_ERROR_LOGS
 static void app_log_sd_error(const char *fmt, ...)
@@ -1456,6 +1457,10 @@ static void write_sorted_node_to_outputs(const AppDataNode *node)
     if (node == NULL) {
         return;
     }
+
+#if APP_SUPPRESS_DATA_ASCII_OUTPUT
+    return;
+#endif
 
     TimeTimestamp ts;
     if (!TimeService_ResolveCapture(&node->time_capture, &ts)) {

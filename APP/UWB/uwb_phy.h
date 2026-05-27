@@ -26,18 +26,18 @@ extern "C" {
  *  超时参数
  * ================================================================ */
 
-#define UWB_PHY_WATCHDOG_MS            50U     /* 活跃状态最后防护, 必须 > RX_SLOT_TIMEOUT (10ms) */
-#define UWB_PHY_IDLE_GUARD_MS      5000U  /* IDLE 监听态保护超时 (仅防止硬件彻底卡死) */
-#define UWB_PHY_RX_SLOT_TIMEOUT_US 2000U  /* 2ms, P99(1ms)+4σ 余量 (实测 max=1ms) */
-#define UWB_PHY_TX_DELAYED_MIN_US  500U   /* 延时发送最小提前量 */
-#define UWB_PHY_HW_ERROR_THRESHOLD 5U     /* 连续硬件错误上限 */
+#define UWB_PHY_WATCHDOG_MS        50U   /* 活跃状态最后防护, 必须 > RX_SLOT_TIMEOUT (10ms) */
+#define UWB_PHY_IDLE_GUARD_MS      5000U /* IDLE 监听态保护超时 (仅防止硬件彻底卡死) */
+#define UWB_PHY_RX_SLOT_TIMEOUT_US 2000U /* 2ms, P99(1ms)+4σ 余量 (实测 max=1ms) */
+#define UWB_PHY_TX_DELAYED_MIN_US  500U  /* 延时发送最小提前量 */
+#define UWB_PHY_HW_ERROR_THRESHOLD 5U    /* 连续硬件错误上限 */
 
 /* ---- 多槽接收 / Anchor 延迟回复参数 ---- */
-#define DISC_SLOT_WIDTH_US           2000U   /* 每槽 2ms */
-#define DISC_RX_SLOT_COUNT           4U      /* RX 槽数量 */
-#define DISC_FIRST_SLOT_TIMEOUT_US   4000U   /* 第一槽 4ms (GUARD + TX 上电时间) */
-#define ANCHOR_ADDR_BASE             0x30U   /* Anchor 地址起始 */
-#define ANCHOR_REPLY_GUARD_US        3000U   /* Anchor 回复保护延迟 (3ms: 处理500us+TX上电2ms+余量500us) */
+#define DISC_SLOT_WIDTH_US         2000U /* 每槽 2ms */
+#define DISC_RX_SLOT_COUNT         4U    /* RX 槽数量 */
+#define DISC_FIRST_SLOT_TIMEOUT_US 4000U /* 第一槽 4ms (GUARD + TX 上电时间) */
+#define ANCHOR_ADDR_BASE           0x30U /* Anchor 地址起始 */
+#define ANCHOR_REPLY_GUARD_US      3000U /* Anchor 回复保护延迟 (3ms: 处理500us+TX上电2ms+余量500us) */
 
 /* ================================================================
  *  状态机枚举

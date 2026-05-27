@@ -48,6 +48,10 @@
 #define PHY_NOTIFY_IRQ (1UL << 0)
 #define PHY_NOTIFY_CMD (1UL << 1)
 
+#define PHY_TS_MASK                 ((1ULL << 40) - 1ULL)
+#define PHY_TS_HALF_RANGE           (1ULL << 39)
+#define PHY_RX_TIMEOUT_DWT_PER_UNIT (512ULL * 128ULL)
+
 /* ---- 上下文 ---- */
 typedef struct {
     uint16_t pan_id;
@@ -76,6 +80,8 @@ typedef struct {
     uint8_t rx_total_count;
     bool rx_got_frame;
     uint8_t rx_frame_count; /* 本窗口收到的有效帧总数 */
+    uint64_t rx_window_base_ts;
+    bool rx_window_base_valid;
 
     /* 窗口号 */
     uint16_t window_id;
@@ -173,6 +179,56 @@ uint64_t UwbPhy_ReadTxTimestamp(void)
     return uwb_timestamp_to_u64(&ts);
 }
 
+static uint64_t phy_read_sys_timestamp(void)
+{
+    uwb_timestamp_t ts;
+    memset(&ts, 0, sizeof(ts));
+    dwt_readsystime(ts.bytes);
+    return uwb_timestamp_to_u64(&ts);
+}
+
+static bool phy_ts_after_or_equal(uint64_t lhs, uint64_t rhs)
+{
+    return ((lhs - rhs) & PHY_TS_MASK) < PHY_TS_HALF_RANGE;
+}
+
+static uint16_t phy_rx_timeout_until(uint64_t deadline_ts)
+{
+    uint64_t now_ts = phy_read_sys_timestamp();
+    if (phy_ts_after_or_equal(now_ts, deadline_ts)) {
+        return 1U;
+    }
+
+    uint64_t remaining = get_timestamp_difference_u64(deadline_ts, now_ts);
+    uint64_t timeout_units =
+        (remaining + PHY_RX_TIMEOUT_DWT_PER_UNIT - 1ULL) /
+        PHY_RX_TIMEOUT_DWT_PER_UNIT;
+
+    if (timeout_units == 0U) return 1U;
+    if (timeout_units > UINT16_MAX) return UINT16_MAX;
+    return (uint16_t)timeout_units;
+}
+
+static uint16_t phy_current_rx_slot_timeout(void)
+{
+    if (!g_phy.rx_window_base_valid) {
+        return (g_phy.rx_done_count == 0U)
+                   ? DISC_FIRST_SLOT_TIMEOUT_US
+                   : g_phy.pending_rx_timeout_us;
+    }
+
+    uint32_t elapsed_us = DISC_FIRST_SLOT_TIMEOUT_US;
+    if (g_phy.rx_done_count > 0U) {
+        elapsed_us += (uint32_t)g_phy.rx_done_count *
+                      (uint32_t)g_phy.pending_rx_timeout_us;
+    }
+
+    uint64_t deadline_ts =
+        (g_phy.rx_window_base_ts + UwbPhy_UsToDwTime(elapsed_us)) &
+        PHY_TS_MASK;
+    return phy_rx_timeout_until(deadline_ts);
+}
+
 /* ================================================================
  *  进入监听 (不是状态机的一部分)
  * ================================================================ */
@@ -193,6 +249,7 @@ static void enter_listening(void)
 
     dwt_setrxtimeout(0); /* 0 = 无超时, 持续监听 */
     dwt_rxenable(0);
+    g_phy.rx_window_base_valid = false;
     g_phy.state = UWB_PHY_ST_IDLE;
     g_phy.step  = UWB_PHY_STEP_PREPARE;
 }
@@ -1057,6 +1114,12 @@ static void run_state_machine(void)
                     }
 
                     int8_t tx_slot_idx = g_phy.tx_slot;
+                    bool rx_window_base_valid = false;
+                    uint64_t rx_window_base_ts = 0U;
+                    if (g_phy.pending_rx) {
+                        rx_window_base_ts = phy_read_sys_timestamp();
+                        rx_window_base_valid = true;
+                    }
                     g_phy.tx_slot      = -1;
 
                     /* 上报 TX_DONE, 携带 slot_index 供 LINK 读取 tx_ts */
@@ -1071,6 +1134,8 @@ static void run_state_machine(void)
                         g_phy.rx_got_frame   = false;
                         g_phy.rx_slot        = -1;
                         g_phy.rx_frame_count = 0; /* ★ 新增 */
+                        g_phy.rx_window_base_ts = rx_window_base_ts;
+                        g_phy.rx_window_base_valid = rx_window_base_valid;
                         g_phy.state          = UWB_PHY_ST_RX_SLOT;
                         g_phy.step           = UWB_PHY_STEP_PREPARE;
                     } else {
@@ -1093,10 +1158,7 @@ static void run_state_machine(void)
                     /* 清除 EXTI pending */
                     __HAL_GPIO_EXTI_CLEAR_IT(GPIO_PIN_8);
 
-                    /* 第一槽用 3ms (容纳 GUARD 处理开销), 后续槽用标准 2ms */
-                    uint16_t slot_timeout = (g_phy.rx_done_count == 0)
-                                                ? DISC_FIRST_SLOT_TIMEOUT_US
-                                                : g_phy.pending_rx_timeout_us;
+                    uint16_t slot_timeout = phy_current_rx_slot_timeout();
                     dwt_setrxtimeout(slot_timeout);
                     if (dwt_rxenable(0) != 0) {
                         /* RX 启用失败: 当前槽标记为空, 上报 */
