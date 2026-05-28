@@ -387,6 +387,15 @@ static void build_and_send_error_response(uint16_t dst16, uint8_t seq,
 
 /* ---- 从 PHY 挂起表发送预载帧 ---- */
 
+static void post_data_retry_event(uint8_t frag_id)
+{
+    phy_evt_t evt;
+    memset(&evt, 0, sizeof(evt));
+    evt.type    = PHY_EVT_DATA_RETRY;
+    evt.frag_id = frag_id;
+    (void)UwbBuffers_SendEvt(&evt, 0);
+}
+
 static void send_pending_frag_as_reply(uint64_t rx_ts)
 {
     if (g_phy.data_pending_slot < 0) return;
@@ -541,7 +550,12 @@ static void phy_handle_data_frame(uwb_slot_t *s, int8_t rx_slot_idx)
             app_log_info("[PHY] DATA_PENDING_MISS PULL src=0x%04X sess=0x%04X frag=%u",
                          src16, session_id, (unsigned)frag_id);
             build_and_send_wait_response(src16, seq, s->rx_ts);
-            forward_data_ctrl_to_link(rx_slot_idx);
+            if (frag_id < g_phy.data_expected_frag) {
+                post_data_retry_event(frag_id);
+                UwbSlots_Free(rx_slot_idx);
+            } else {
+                forward_data_ctrl_to_link(rx_slot_idx);
+            }
         }
 
         if (!g_phy.fast_reply_active) enter_listening();
@@ -958,11 +972,7 @@ static void process_cmd(void)
 
             case PHY_CMD_LOAD_PENDING:
                 if (cmd.slot_index >= 0) {
-                    /* 释放旧挂起帧 */
-                    if (g_phy.data_pending_slot >= 0) {
-                        UwbSlots_Free(g_phy.data_pending_slot);
-                    }
-                    /* ★ 修复2: 将 slot owner 改为 PHY_OWN */
+                    /* Keep older slots alive so LINK can reload a backup frag. */
                     uwb_slot_t *ps = UwbSlots_Get(cmd.slot_index);
                     if (ps != NULL) {
                         ps->owner = UWB_SLOT_PHY_OWN;

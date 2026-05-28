@@ -117,10 +117,13 @@ typedef struct {
 
 typedef struct {
     bool valid;
-    bool started;
+    bool in_progress;
+    bool complete;
+    bool no_data;
     uint16_t anchor_id;
     double trigger_distance_m;
     uint32_t trigger_ms;
+    uint32_t attempts;
 } tag_pull_record_t;
 
 typedef struct {
@@ -1176,7 +1179,9 @@ static tag_pull_record_t *tag_next_pending_pull_record(void)
 
     for (uint32_t i = 0U; i < TAG_PULL_MAX_ANCHORS; ++i) {
         if (!g_tag_pull_records[i].valid ||
-            g_tag_pull_records[i].started) {
+            g_tag_pull_records[i].in_progress ||
+            g_tag_pull_records[i].complete ||
+            g_tag_pull_records[i].no_data) {
             continue;
         }
 
@@ -1210,7 +1215,10 @@ static void tag_maybe_queue_data_pull(const UwbRangeResult *result)
 
     rec->trigger_distance_m = result->distance_m;
     rec->trigger_ms         = HAL_GetTick();
-    rec->started            = false;
+    rec->in_progress        = false;
+    rec->complete           = false;
+    rec->no_data            = false;
+    rec->attempts           = 0U;
 
     app_log_info("[APP] TAG_PULL_TRIGGER anchor=0x%04X dist=%.2fm action=%s",
                  rec->anchor_id,
@@ -1401,6 +1409,50 @@ static void tag_log_data_stats(const char *label)
                  (unsigned long)g_tag_data.drop_count,
                  g_rx_len,
                  g_tag_data.total_len);
+}
+
+static tag_pull_record_t *tag_current_pull_record(void)
+{
+    if (g_tag_data.target_id == 0U) {
+        return NULL;
+    }
+    return tag_find_pull_record(g_tag_data.target_id);
+}
+
+static void tag_mark_pull_success(void)
+{
+    tag_pull_record_t *rec = tag_current_pull_record();
+    if (rec == NULL) return;
+
+    rec->in_progress = false;
+    rec->complete    = true;
+    app_log_info("[APP] TAG_PULL_DONE anchor=0x%04X attempts=%lu",
+                 rec->anchor_id,
+                 (unsigned long)rec->attempts);
+}
+
+static void tag_mark_pull_no_data(void)
+{
+    tag_pull_record_t *rec = tag_current_pull_record();
+    if (rec == NULL) return;
+
+    rec->in_progress = false;
+    rec->no_data     = true;
+    app_log_info("[APP] TAG_PULL_NO_DATA anchor=0x%04X attempts=%lu",
+                 rec->anchor_id,
+                 (unsigned long)rec->attempts);
+}
+
+static void tag_mark_pull_retry(void)
+{
+    tag_pull_record_t *rec = tag_current_pull_record();
+    if (rec == NULL) return;
+
+    rec->in_progress = false;
+    rec->trigger_ms  = HAL_GetTick();
+    app_log_warn("[APP] TAG_PULL_RETRY anchor=0x%04X attempts=%lu",
+                 rec->anchor_id,
+                 (unsigned long)rec->attempts);
 }
 
 static void tag_request_cfg(uint16_t target_id, uint16_t session_id)
@@ -1676,8 +1728,33 @@ static bool tag_verify_prox_table(void)
 
 static void handle_tag_ack(const UwbLinkAppEvent *evt)
 {
-    (void)evt;
+    uint8_t resp_type = UWB_DATA_RESP_ACK;
+
+    if (evt != NULL) {
+        if (evt->data.data_ack.src_id != g_tag_data.target_id ||
+            evt->data.data_ack.session_id != g_tag_data.session_id) {
+            app_log_warn("[APP] DATA_ACK_DROP src=0x%04X sess=0x%04X expect=0x%04X/0x%04X",
+                         evt->data.data_ack.src_id,
+                         evt->data.data_ack.session_id,
+                         g_tag_data.target_id,
+                         g_tag_data.session_id);
+            return;
+        }
+        resp_type = evt->data.data_ack.resp_type;
+    }
+
     g_tag_data.ack_count++;
+
+    if (resp_type == UWB_DATA_RESP_STOP) {
+        app_log_info("[APP] DATA_NO_DATA anchor=0x%04X sess=0x%04X state=%u",
+                     g_tag_data.target_id,
+                     g_tag_data.session_id,
+                     (unsigned)g_tag_data.state);
+        tag_mark_pull_no_data();
+        tag_log_data_stats("DATA_STATS_NO_DATA");
+        tag_reset_session();
+        return;
+    }
 
     if (g_tag_data.state == TAG_DATA_WAIT_CFG_ACK) {
         app_log_info("[APP] DATA_ACK CFG sess=0x%04X", g_tag_data.session_id);
@@ -1690,6 +1767,7 @@ static void handle_tag_ack(const UwbLinkAppEvent *evt)
         app_log_info("[APP] DATA_ACK DONE sess=0x%04X", g_tag_data.session_id);
         tag_log_data_stats("DATA_STATS");
         tag_log_session_complete();
+        tag_mark_pull_success();
         tag_reset_session();
     }
 }
@@ -1701,6 +1779,7 @@ static void handle_tag_data_fail(void)
         app_log_warn("[APP] DATA_DONE_ACK_FAIL anchor=0x%04X sess=0x%04X",
                      g_tag_data.target_id, g_tag_data.session_id);
         tag_log_data_stats("DATA_STATS");
+        tag_mark_pull_success();
         tag_reset_session();
         return;
     }
@@ -1708,6 +1787,7 @@ static void handle_tag_data_fail(void)
     app_log_warn("[APP] DATA_SESSION_FAIL anchor=0x%04X sess=0x%04X",
                  g_tag_data.target_id, g_tag_data.session_id);
     tag_log_data_stats("DATA_STATS_FAIL");
+    tag_mark_pull_retry();
     tag_send_reset_cmd(g_tag_data.session_id);
     tag_reset_session();
 }
@@ -1749,6 +1829,17 @@ static void handle_tag_frag(const UwbDataFragEvent *evt)
                          g_tag_data.total_len,
                          (unsigned)g_tag_data.total_frags,
                          g_tag_data.total_crc);
+
+            if (g_tag_data.total_len == 0U &&
+                g_tag_data.total_frags == 0U) {
+                app_log_info("[APP] DATA_META_NO_DATA anchor=0x%04X",
+                             g_tag_data.target_id);
+                UwbSlots_Free(evt->slot_index);
+                tag_mark_pull_no_data();
+                tag_log_data_stats("DATA_STATS_NO_DATA");
+                tag_reset_session();
+                return;
+            }
 
             if (g_tag_data.total_len > DATA_BUF_SIZE ||
                 g_tag_data.total_frags == 0U ||
@@ -1856,11 +1947,13 @@ static void tag_data_poll(void)
     if (g_tag_data.state == TAG_DATA_IDLE) {
         tag_pull_record_t *rec = tag_next_pending_pull_record();
         if (rec != NULL) {
-            rec->started = true;
-            app_log_info("[APP] TAG_PULL_START anchor=0x%04X dist=%.2fm age=%lums",
+            rec->in_progress = true;
+            rec->attempts++;
+            app_log_info("[APP] TAG_PULL_START anchor=0x%04X dist=%.2fm age=%lums attempt=%lu",
                          rec->anchor_id,
                          rec->trigger_distance_m,
-                         (unsigned long)(now - rec->trigger_ms));
+                         (unsigned long)(now - rec->trigger_ms),
+                         (unsigned long)rec->attempts);
             tag_start_session(rec->anchor_id);
         }
     }
@@ -1953,6 +2046,16 @@ static void anchor_prepare_meta(uint16_t target_id, uint16_t session_id)
                                    payload, sizeof(payload));
 }
 
+static void anchor_prepare_empty_meta(uint16_t target_id, uint16_t session_id)
+{
+    uint8_t payload[DATA_META_PAYLOAD_LEN];
+    memset(payload, 0, sizeof(payload));
+
+    (void)anchor_send_payload_slot(target_id, session_id, 0,
+                                   UWB_DATA_FRAG_FLAG_META,
+                                   payload, sizeof(payload));
+}
+
 static void anchor_prepare_data_frag(uint16_t target_id, uint16_t session_id,
                                      uint8_t frag_id)
 {
@@ -1992,8 +2095,6 @@ static void handle_anchor_data_cfg(const UwbLinkAppEvent *evt)
     app_log_info("[APP] DATA_CFG tag=0x%04X sess=0x%04X total_frags=%u",
                  g_anchor_data.tag_id, g_anchor_data.session_id,
                  (unsigned)g_anchor_data.total_frags);
-
-    anchor_prepare_meta(g_anchor_data.tag_id, g_anchor_data.session_id);
 }
 
 static void handle_anchor_data_ctrl(const UwbDataCtrlEvent *ctrl)
@@ -2015,6 +2116,13 @@ static void handle_anchor_data_ctrl(const UwbDataCtrlEvent *ctrl)
     g_anchor_data.ctrl_count++;
 
     if (ctrl->ctrl_type == UWB_DATA_CTRL_GET_INFO) {
+        if (g_tx_len == 0U || g_anchor_data.total_frags == 0U) {
+            app_log_warn("[APP] DATA_INFO_NO_DATA tag=0x%04X sess=0x%04X",
+                         ctrl->src_id,
+                         ctrl->session_id);
+            anchor_prepare_empty_meta(ctrl->src_id, ctrl->session_id);
+            return;
+        }
         anchor_prepare_meta(ctrl->src_id, ctrl->session_id);
         return;
     }

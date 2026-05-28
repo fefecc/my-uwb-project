@@ -69,17 +69,17 @@ bool UwbStack_StartFromConfig(void)
     const osThreadAttr_t phy_attr = {
         .name       = "uwbPhy",
         .stack_size = 1024U * 4U,
-        .priority   = osPriorityAboveNormal,
+        .priority   = osPriorityHigh,
     };
     const osThreadAttr_t link_attr = {
         .name       = "uwbLink",
         .stack_size = 1536U * 4U,
-        .priority   = osPriorityNormal,
+        .priority   = osPriorityAboveNormal,
     };
     const osThreadAttr_t app_attr = {
         .name       = "uwbApp",
         .stack_size = 1536U * 4U,
-        .priority   = osPriorityNormal,
+        .priority   = osPriorityAboveNormal,
     };
 
     if (!UwbPhy_StartThread(&phy_attr) ||

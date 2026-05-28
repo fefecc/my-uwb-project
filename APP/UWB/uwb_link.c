@@ -34,6 +34,7 @@
 
 #define LINK_RING_ACK_TIMEOUT_MS     20U
 #define LINK_RING_RETRY_INTERVAL_MS  10U
+#define LINK_DISC_RECOVERY_GAP_MS     4U
 
 typedef enum {
     LINK_ERR_NONE = 0,
@@ -110,6 +111,7 @@ static TaskHandle_t   g_link_task;
 
 static uint8_t  g_disc_outstanding;
 static uint8_t  g_disc_count;
+static uint32_t g_next_disc_allowed_ms;
 static link_timeout_ctx_t g_to;
 
 static link_data_context_t g_data;
@@ -312,11 +314,36 @@ static void link_data_slot_unregister(int8_t slot_index)
     }
 }
 
+static void link_data_slot_prune_for_new(uint8_t frag_id)
+{
+    uint8_t keep_prev = frag_id > 0U ? (uint8_t)(frag_id - 1U) : 0U;
+
+    for (uint8_t i = 0; i < LINK_DATA_SLOT_MAX; i++) {
+        if (!g_data_slots[i].valid) {
+            continue;
+        }
+
+        if (g_data_slots[i].frag_id == frag_id) {
+            UwbSlots_Free(g_data_slots[i].slot_index);
+            g_data_slots[i].valid = false;
+            continue;
+        }
+
+        if (g_data_slots[i].frag_id == keep_prev) {
+            continue;
+        }
+
+        UwbSlots_Free(g_data_slots[i].slot_index);
+        g_data_slots[i].valid = false;
+    }
+}
+
 static bool link_data_slot_register(int8_t slot_index, uint16_t target_id,
                                     uint16_t session_id, uint8_t frag_id,
                                     uint8_t flags)
 {
     link_data_slot_unregister(slot_index);
+    link_data_slot_prune_for_new(frag_id);
 
     for (uint8_t i = 0; i < LINK_DATA_SLOT_MAX; i++) {
         if (g_data_slots[i].valid) {
@@ -744,6 +771,7 @@ static void disc_sm_on_error(link_error_t err)
 
     g_disc_outstanding = 0;
     g_to.disc_cmd_sent_ms = 0;
+    g_next_disc_allowed_ms = HAL_GetTick() + LINK_DISC_RECOVERY_GAP_MS;
 
     phy_cmd_t cmd;
     memset(&cmd, 0, sizeof(cmd));
@@ -1086,6 +1114,7 @@ static void link_dispatch_phy_evt(const phy_evt_t *evt)
         if (g_disc_outstanding > 0) {
             g_disc_outstanding--;
         }
+        g_next_disc_allowed_ms = HAL_GetTick() + LINK_DISC_RECOVERY_GAP_MS;
         g_disc_count++;
         break;
 
@@ -1576,6 +1605,13 @@ static void link_tag_schedule(void)
 {
     if (g_data.state != LINK_DATA_IDLE || g_data.rx_window_active) return;
 
+    uint32_t now = HAL_GetTick();
+    if (g_disc_outstanding == 0U &&
+        g_next_disc_allowed_ms != 0U &&
+        (int32_t)(now - g_next_disc_allowed_ms) < 0) {
+        return;
+    }
+
     if (g_data.pending_cmd_valid &&
         g_disc_count >= 2U &&
         g_disc_outstanding == 0U) {
@@ -1619,6 +1655,7 @@ bool UwbLink_Init(const UwbStackConfig *cfg)
 
     g_disc_outstanding = 0;
     g_disc_count = 0;
+    g_next_disc_allowed_ms = 0U;
     memset(&g_to, 0, sizeof(g_to));
     memset(&g_data, 0, sizeof(g_data));
     g_data.state = LINK_DATA_IDLE;
